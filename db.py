@@ -8,6 +8,11 @@ results and real full-text prompt search (FTS5).
 
 Favorites / archive / playlists still live in their JSON files for now and are
 applied as filters by the API layer; a later phase can fold them into tables here.
+
+Tags come from two sources, told apart by ``media_tags.source``: ``auto`` tags are
+lifted from prompts at index time (mediautil.tags_for_groups), ``user`` tags are the
+ones the user assigns by hand. User tags are DURABLE state in ``tags.json`` (owned by
+the server); the index only mirrors them so search / filter / facets can use them.
 """
 
 from __future__ import annotations
@@ -65,7 +70,8 @@ CREATE INDEX IF NOT EXISTS idx_media_model   ON media(model);
 CREATE TABLE IF NOT EXISTS media_tags (
   media_id TEXT,
   tag      TEXT,
-  PRIMARY KEY (media_id, tag)
+  source   TEXT NOT NULL DEFAULT 'auto',
+  PRIMARY KEY (media_id, tag, source)
 );
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON media_tags(tag);
 
@@ -88,6 +94,80 @@ MEDIA_COLUMNS = [
     "has_subtitles", "size_bytes", "api_generated", "preset",
     *AUX_FLAG_COLUMNS,
 ]
+
+
+# Durable user-tag state (see the module docstring), a sibling of metadata.json.
+USER_TAGS_FILE = "tags.json"
+TAG_SOURCES = ("auto", "user")
+
+
+def load_user_tag_items(path: str | Path) -> dict[str, list[str]]:
+    """``{media_id: [tag, ...]}`` from a ``tags.json`` file. Tolerant: a missing or
+    unreadable file reads as no user tags (the server owns validation + strict writes)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for mid, tags in items.items():
+        if isinstance(tags, list):
+            clean = [t for t in (str(x).strip() for x in tags) if t]
+            if clean:
+                out[str(mid)] = list(dict.fromkeys(clean))
+    return out
+
+
+def _ensure_tag_schema(conn: sqlite3.Connection) -> None:
+    """Migrate a pre-``source`` media_tags table. The table is purely derived (every
+    build refills it), so the old one is simply dropped and recreated."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(media_tags)")}
+    if cols and "source" not in cols:
+        conn.execute("DROP TABLE media_tags")
+        conn.execute(
+            "CREATE TABLE media_tags (media_id TEXT, tag TEXT, source TEXT NOT NULL DEFAULT 'auto', "
+            "PRIMARY KEY (media_id, tag, source))"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_tag ON media_tags(tag)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_source_tag ON media_tags(source, tag)")
+
+
+def _tag_sources(tag_source: str) -> tuple[str, ...]:
+    """Which ``media_tags.source`` values a tag filter matches: 'user', 'auto' or both."""
+    return (tag_source,) if tag_source in TAG_SOURCES else TAG_SOURCES
+
+
+def _tag_filter_clause(tags: Iterable[str], tag_source: str = "all", tag_mode: str = "any",
+                       alias: str = "mt") -> tuple[str | None, list[Any]]:
+    """SQL (and params) restricting ``m`` to media carrying the tags. ``any`` (default) is
+    match-ANY — one EXISTS over the whole list; ``all`` requires every tag (one EXISTS each)."""
+    tl = [t for t in tags if t]
+    if not tl:
+        return None, []
+    sources = _tag_sources(tag_source)
+    src_sql = ",".join("?" for _ in sources)
+    if tag_mode == "all":
+        parts = [f"EXISTS (SELECT 1 FROM media_tags {alias} WHERE {alias}.media_id = m.id "
+                 f"AND {alias}.tag = ? AND {alias}.source IN ({src_sql}))" for _ in tl]
+        params: list[Any] = []
+        for t in tl:
+            params.extend([t, *sources])
+        return "(" + " AND ".join(parts) + ")", params
+    ph = ",".join("?" for _ in tl)
+    return (f"EXISTS (SELECT 1 FROM media_tags {alias} WHERE {alias}.media_id = m.id "
+            f"AND {alias}.tag IN ({ph}) AND {alias}.source IN ({src_sql}))"), [*tl, *sources]
+
+
+def _attach_tags(conn: sqlite3.Connection, d: dict[str, Any]) -> dict[str, Any]:
+    """Prompt-derived ``tags`` and hand-assigned ``user_tags``, kept apart."""
+    d["tags"], d["user_tags"] = [], []
+    for tag, source in conn.execute(
+        "SELECT tag, source FROM media_tags WHERE media_id = ? ORDER BY tag COLLATE NOCASE", (d["id"],)
+    ):
+        (d["user_tags"] if source == "user" else d["tags"]).append(tag)
+    return d
 
 
 def _connect(db_path: str | Path) -> sqlite3.Connection:
@@ -148,8 +228,13 @@ def build_index(
     metadata_path: str | Path,
     gallery_dir: str | Path,
     thumbnails_dir: str | Path | None = None,
+    user_tags_path: str | Path | None = None,
 ) -> int:
-    """(Re)build the index from metadata.json. Returns the number of rows written."""
+    """(Re)build the index from metadata.json. Returns the number of rows written.
+
+    User tags are read from ``user_tags_path`` (default: ``tags.json`` next to
+    metadata.json) INSIDE the table-swap write transaction, so a tag edit that lands
+    while a rebuild is scanning is never overwritten by a stale snapshot."""
     gallery_dir = Path(gallery_dir)
     thumbnails_dir = Path(thumbnails_dir) if thumbnails_dir else gallery_dir / "thumbnails"
     metadata_path = Path(metadata_path)
@@ -184,6 +269,7 @@ def build_index(
     conn = _connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        _ensure_tag_schema(conn)
         # Migrate pre-existing DBs: CREATE TABLE IF NOT EXISTS won't add new columns.
         for col in ("media_w", "media_h", "size_bytes"):
             try:
@@ -296,14 +382,27 @@ def build_index(
                   for col in AUX_FLAG_COLUMNS),
             ))
             for tag in tags:
-                tag_rows.append((mid, tag))
-            fts_rows.append((
+                tag_rows.append((mid, tag, "auto"))
+            fts_rows.append([
                 mid, item.get("prompt") or "", " ".join(tags),
                 item.get("model") or "", rel.rsplit("/", 1)[-1],
-            ))
+            ])
         # Swap the tables in one SHORT write transaction (rows were prepared above
         # with no lock held): delete-all + bulk insert is a couple of seconds even
         # at library scale, so concurrent writers just wait it out via busy_timeout.
+        # IMMEDIATE takes the write lock BEFORE tags.json is read: a concurrent
+        # set_user_tags either committed already (and its tags.json write is visible
+        # here) or waits for this swap and re-applies on top of it.
+        conn.execute("BEGIN IMMEDIATE")
+        user_tags = load_user_tag_items(
+            user_tags_path if user_tags_path is not None else metadata_path.parent / USER_TAGS_FILE
+        )
+        indexed = {r[0] for r in fts_rows}
+        for row in fts_rows:
+            extra = user_tags.get(row[0])
+            if extra:
+                row[2] = " ".join([row[2], *extra]).strip()
+        tag_rows.extend((mid, tag, "user") for mid, tl in user_tags.items() if mid in indexed for tag in tl)
         conn.execute("DELETE FROM media")
         conn.execute("DELETE FROM media_tags")
         conn.execute("DELETE FROM media_fts")
@@ -312,13 +411,57 @@ def build_index(
             f"VALUES ({','.join('?' for _ in MEDIA_COLUMNS)})",
             media_rows,
         )
-        conn.executemany("INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)", tag_rows)
+        conn.executemany("INSERT OR IGNORE INTO media_tags (media_id, tag, source) VALUES (?, ?, ?)", tag_rows)
         conn.executemany(
             "INSERT INTO media_fts (id, prompt, tags, model, filename) VALUES (?, ?, ?, ?, ?)",
             fts_rows,
         )
         conn.commit()
         return len(media_rows)
+    finally:
+        conn.close()
+
+
+def set_user_tags(db_path: str | Path, mapping: dict[str, list[str]]) -> int:
+    """Mirror hand-assigned tags into the index for just the given media (``{id: tags}``;
+    an empty list clears them) — no full rebuild. Refreshes each row's FTS ``tags`` text
+    (prompt tags + user tags) so search finds them too. Ids not in the index are skipped
+    (a later rebuild picks them up from tags.json). Returns rows updated."""
+    mapping = {str(k): list(dict.fromkeys(str(t) for t in (v or []) if str(t).strip())) for k, v in mapping.items()}
+    if not mapping:
+        return 0
+    conn = _connect(db_path)
+    try:
+        conn.executescript(SCHEMA)
+        _ensure_tag_schema(conn)
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        ids = list(mapping)
+        present: set[str] = set()
+        CHUNK = 400
+        for start in range(0, len(ids), CHUNK):
+            chunk = ids[start:start + CHUNK]
+            qmarks = ",".join("?" for _ in chunk)
+            present.update(r[0] for r in conn.execute(f"SELECT id FROM media WHERE id IN ({qmarks})", chunk))
+            conn.execute(f"DELETE FROM media_tags WHERE source = 'user' AND media_id IN ({qmarks})", chunk)
+        rows = [(mid, t, "user") for mid in ids if mid in present for t in mapping[mid]]
+        conn.executemany("INSERT OR IGNORE INTO media_tags (media_id, tag, source) VALUES (?, ?, ?)", rows)
+        present_list = [i for i in ids if i in present]
+        for start in range(0, len(present_list), CHUNK):
+            chunk = present_list[start:start + CHUNK]
+            qmarks = ",".join("?" for _ in chunk)
+            auto: dict[str, list[str]] = {}
+            for mid, tag in conn.execute(
+                f"SELECT media_id, tag FROM media_tags WHERE source = 'auto' AND media_id IN ({qmarks})", chunk
+            ):
+                auto.setdefault(mid, []).append(tag)
+            fts = conn.execute(f"SELECT rowid, id FROM media_fts WHERE id IN ({qmarks})", chunk).fetchall()
+            conn.executemany(
+                "UPDATE media_fts SET tags = ? WHERE rowid = ?",
+                [(" ".join([*auto.get(r[1], []), *mapping[r[1]]]), r[0]) for r in fts],
+            )
+        conn.commit()
+        return len(present)
     finally:
         conn.close()
 
@@ -357,6 +500,8 @@ def query_media(
     hidden: Iterable[str] = (),
     start: str | None = None,
     end: str | None = None,
+    tag_source: str = "all",
+    tag_mode: str = "any",
 ) -> dict[str, Any]:
     """Paginated, filtered media query. ``favorites``/``stashed`` are id sets the
     caller supplies (from library.json); they drive Favorites/Archive and the
@@ -397,16 +542,14 @@ def query_media(
             if view == "favorites":
                 where.append("m.id IN (SELECT id FROM _fav)" if has_fav else "0")
 
-        # Tag filter is match-ANY (OR): a clip qualifies if it carries at least one of
-        # the selected tags, not all of them — mirrors the model filter and the Prompt
-        # Studio tag cloud. (A per-tag clause AND-joined into `where` required ALL of them.)
-        tag_list = list(tags)
-        if tag_list:
-            placeholders = ",".join("?" for _ in tag_list)
-            where.append(
-                f"EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = m.id AND mt.tag IN ({placeholders}))"
-            )
-            params.extend(tag_list)
+        # Tag filter defaults to match-ANY (OR): a clip qualifies if it carries at least
+        # one of the selected tags — mirrors the model filter and the Prompt Studio tag
+        # cloud. ``tag_mode="all"`` requires every tag; ``tag_source`` limits the match to
+        # prompt ('auto') or hand-assigned ('user') tags (default: either).
+        tag_sql, tag_params = _tag_filter_clause(tags, tag_source, tag_mode)
+        if tag_sql:
+            where.append(tag_sql)
+            params.extend(tag_params)
 
         model_list = list(models)
         if model_list:
@@ -475,12 +618,7 @@ def query_media(
         ).fetchall()
         items = []
         for row in rows:
-            d = dict(row)
-            d["tags"] = [
-                r[0] for r in conn.execute(
-                    "SELECT tag FROM media_tags WHERE media_id = ? ORDER BY tag", (d["id"],)
-                )
-            ]
+            d = _attach_tags(conn, dict(row))
             d["has_subtitles"] = bool(d["has_subtitles"])
             d["api_generated"] = bool(d.get("api_generated"))
             _decode_flags(d)
@@ -508,9 +646,7 @@ def media_by_ids(db_path: str | Path, ids: list[str]) -> list[dict[str, Any]]:
                 d["has_subtitles"] = bool(d["has_subtitles"])
                 d["api_generated"] = bool(d.get("api_generated"))
                 _decode_flags(d)
-                d["tags"] = [
-                    r[0] for r in conn.execute("SELECT tag FROM media_tags WHERE media_id = ?", (d["id"],))
-                ]
+                _attach_tags(conn, d)
                 by_id[d["id"]] = d
         return [by_id[i] for i in ids if i in by_id]
     finally:
@@ -614,10 +750,7 @@ def _media_dict(conn: sqlite3.Connection, row: sqlite3.Row | None) -> dict[str, 
     d["has_subtitles"] = bool(d["has_subtitles"])
     d["api_generated"] = bool(d.get("api_generated"))
     _decode_flags(d)
-    d["tags"] = [
-        r[0] for r in conn.execute("SELECT tag FROM media_tags WHERE media_id = ? ORDER BY tag", (d["id"],))
-    ]
-    return d
+    return _attach_tags(conn, d)
 
 
 def media_related(db_path: str | Path, media_id: str, limit: int = 100) -> dict[str, Any]:
@@ -692,6 +825,8 @@ def facets(
     hidden: Iterable[str] = (),
     start: str | None = None,
     end: str | None = None,
+    tag_source: str = "all",
+    tag_mode: str = "any",
 ) -> dict[str, Any]:
     """Tag / model / canvas / resolution counts for the current browsing scope.
 
@@ -756,12 +891,7 @@ def facets(
         }
 
         def tag_clause() -> tuple[str | None, list[Any]]:
-            tl = [t for t in tags if t]
-            if not tl:
-                return None, []
-            ph = ",".join("?" for _ in tl)
-            return (f"EXISTS (SELECT 1 FROM media_tags mt2 WHERE mt2.media_id = m.id "
-                    f"AND mt2.tag IN ({ph}))"), list(tl)
+            return _tag_filter_clause(tags, tag_source, tag_mode, alias="mt2")
 
         def model_clause() -> tuple[str | None, list[Any]]:
             ml = [m for m in models if m]
@@ -800,14 +930,21 @@ def facets(
             return ((" WHERE " + " AND ".join(w)) if w else ""), p
 
         tags_where, tags_params = compose(model_clause(), res_clause())
-        tag_rows = [
-            {"name": r["tag"], "count": r["n"]}
-            for r in conn.execute(
-                f"SELECT mt.tag, COUNT(*) n FROM media_tags mt JOIN media m ON m.id = mt.media_id{joins}{tags_where} "
-                f"GROUP BY mt.tag ORDER BY n DESC, mt.tag",
-                tags_params,
-            )
-        ]
+
+        def source_tag_rows(source: str) -> list[dict[str, Any]]:
+            src_where = (tags_where + " AND" if tags_where else " WHERE") + " mt.source = ?"
+            return [
+                {"name": r["tag"], "count": r["n"]}
+                for r in conn.execute(
+                    f"SELECT mt.tag, COUNT(*) n FROM media_tags mt JOIN media m ON m.id = mt.media_id{joins}{src_where} "
+                    f"GROUP BY mt.tag ORDER BY n DESC, mt.tag",
+                    [*tags_params, source],
+                )
+            ]
+
+        # `tags` keeps its meaning (prompt-derived); hand-assigned tags count separately.
+        tag_rows = source_tag_rows("auto")
+        user_tag_rows = source_tag_rows("user")
         models_where, models_params = compose(tag_clause(), res_clause())
         model_rows = [
             {"name": r["model"] or "Unknown model", "count": r["n"]}
@@ -855,7 +992,7 @@ def facets(
         # Total stays the scope count (ignores chips) — its prior meaning; unused by the UI.
         total = conn.execute(f"SELECT COUNT(*) FROM media m{joins}"
                              f"{(' WHERE ' + ' AND '.join(where)) if where else ''}", params).fetchone()[0]
-        return {"tags": tag_rows, "models": model_rows, "canvases": canvas_rows,
+        return {"tags": tag_rows, "user_tags": user_tag_rows, "models": model_rows, "canvases": canvas_rows,
                 "resolutions": resolution_rows, "total": total}
     finally:
         conn.close()

@@ -96,6 +96,7 @@ PLAYLISTS_FILE = DATA_DIR / "playlists.json"
 COLLECTIONS_FILE = DATA_DIR / "collections.json"
 COLLECTION_GROUPS_FILE = DATA_DIR / "collection_groups.json"
 TAG_WORDS_FILE = DATA_DIR / "tag_words.json"  # optional additions to the tagger's word lists (db.build_index reads it)
+USER_TAGS_FILE = DATA_DIR / db.USER_TAGS_FILE  # hand-assigned media tags (durable; index.db mirrors them)
 SCENES_FILE = DATA_DIR / "scenes.json"  # saved Prompt Studio Scene Builder scenes
 RESPONSES_FILE = DATA_DIR / "saved_responses.json"  # Prompt Studio responses the user starred
 PERSONAS_FILE = DATA_DIR / "personas.json"  # Prompt Studio persona / voice cards
@@ -4560,7 +4561,7 @@ _rebuild_dirty = False
 
 def _do_rebuild() -> None:
     try:
-        rows = db.build_index(DB_FILE, METADATA_FILE, GALLERY_DIR)
+        rows = db.build_index(DB_FILE, METADATA_FILE, GALLERY_DIR, user_tags_path=USER_TAGS_FILE)
         print(f"index.db rebuilt: {rows} media rows")
     except Exception as exc:  # pragma: no cover - defensive
         print(f"index.db rebuild failed: {exc}")
@@ -5412,6 +5413,17 @@ def _multi_arg(name: str, split: bool = True) -> list[str]:
     return values
 
 
+def _tag_source_arg() -> str:
+    """?tag_source= user | auto | all (default): which tag kinds the tag filter matches."""
+    v = str(request.args.get("tag_source") or "all").strip().lower()
+    return v if v in ("user", "auto") else "all"
+
+
+def _tag_mode_arg() -> str:
+    """?tag_mode= any (default, match-ANY) | all (every selected tag)."""
+    return "all" if str(request.args.get("tag_mode") or "").strip().lower() == "all" else "any"
+
+
 def _int_arg(name: str, default: int) -> int:
     try:
         return int(request.args.get(name, default))
@@ -5497,6 +5509,8 @@ def api_media() -> Response:
         hidden=hidden,
         start=start,
         end=end,
+        tag_source=_tag_source_arg(),
+        tag_mode=_tag_mode_arg(),
     )
     return jsonify(result)
 
@@ -5534,6 +5548,8 @@ def api_facets() -> Response:
         hidden=facet_hidden,
         start=start,
         end=end,
+        tag_source=_tag_source_arg(),
+        tag_mode=_tag_mode_arg(),
     ))
 
 
@@ -5583,6 +5599,298 @@ def api_media_related() -> Response:
             data["base"] = None
         data["generated"] = [g for g in (data.get("generated") or []) if str(g.get("id")) not in hidden]
     return jsonify(data)
+
+
+# --------------------------------------------------------------------------- #
+# User tags — hand-assigned labels on media, alongside the prompt-derived tags.
+#
+# Durable state is tags.json: {"version": 1, "tags": {name: {color, created_at}},
+# "items": {media_id: [name, ...]}}. Names match case-insensitively (the registry's
+# spelling wins). index.db mirrors item tags as media_tags rows with source='user'
+# (db.set_user_tags on every edit; db.build_index re-reads tags.json on rebuild).
+# Locked-collection media never surface: edits skip hidden ids and every count /
+# tag list is computed over visible media only.
+# --------------------------------------------------------------------------- #
+
+_user_tags_lock = threading.Lock()
+USER_TAG_NAME_LIMIT = 64
+MAX_USER_TAGS = 5000
+MAX_TAGS_PER_ITEM = 100
+_TAG_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _clean_tag_name(value) -> str:
+    """Trimmed, whitespace-collapsed, length-capped tag name ("" = invalid)."""
+    return " ".join(str(value or "").split())[:USER_TAG_NAME_LIMIT].strip()
+
+
+def _clean_tag_color(value) -> str:
+    v = str(value or "").strip()
+    return v.lower() if _TAG_COLOR_RE.match(v) else ""
+
+
+def _normalize_user_tags(data) -> dict:
+    """Validate a parsed tags.json into the canonical shape. Item tags are re-spelled to
+    their registry name (case-insensitive match); an item tag missing from the registry
+    is registered, so the two halves can never disagree."""
+    tags_in = data.get("tags") if isinstance(data, dict) else None
+    items_in = data.get("items") if isinstance(data, dict) else None
+    registry: dict[str, dict] = {}
+    by_key: dict[str, str] = {}
+    for raw_name, meta in (tags_in.items() if isinstance(tags_in, dict) else []):
+        name = _clean_tag_name(raw_name)
+        if not name or name.casefold() in by_key or len(registry) >= MAX_USER_TAGS:
+            continue
+        meta = meta if isinstance(meta, dict) else {}
+        registry[name] = {"color": _clean_tag_color(meta.get("color")),
+                          "created_at": str(meta.get("created_at") or "")[:32]}
+        by_key[name.casefold()] = name
+    items: dict[str, list[str]] = {}
+    for mid, raw_tags in (items_in.items() if isinstance(items_in, dict) else []):
+        mid = str(mid)[:MAX_MEDIA_ID_LEN]
+        if not mid or not isinstance(raw_tags, list):
+            continue
+        out: list[str] = []
+        for t in raw_tags:
+            name = _clean_tag_name(t)
+            if not name:
+                continue
+            canon = by_key.get(name.casefold())
+            if not canon:
+                if len(registry) >= MAX_USER_TAGS:
+                    continue
+                registry[name] = {"color": "", "created_at": ""}
+                by_key[name.casefold()] = canon = name
+            if canon not in out:
+                out.append(canon)
+        if out:
+            items[mid] = out[:MAX_TAGS_PER_ITEM]
+    return {"version": 1, "tags": registry, "items": items}
+
+
+def _load_user_tags(strict: bool = False) -> dict:
+    """tags.json, normalized. ``strict=True`` (every mutation path) raises
+    CorruptStateError on a present-but-unreadable file instead of treating it as empty,
+    so a transient read error can never wipe the user's tags on the next write."""
+    if strict:
+        return _normalize_user_tags(_load_json_strict(USER_TAGS_FILE, {}))
+    try:
+        return _normalize_user_tags(json.loads(USER_TAGS_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        return _normalize_user_tags({})
+
+
+def _save_user_tags(data: dict) -> None:
+    _atomic_write_json(USER_TAGS_FILE, data)
+
+
+def _sync_user_tags_index(data: dict, ids) -> None:
+    """Mirror the given items' tags into index.db (best-effort: a failure only delays
+    them until the next rebuild, which re-reads tags.json)."""
+    ids = [str(i) for i in ids]
+    if not ids or not DB_FILE.exists():
+        return
+    try:
+        db.set_user_tags(DB_FILE, {mid: data["items"].get(mid, []) for mid in ids})
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"user tag index sync failed: {exc}")
+
+
+def _find_user_tag(data: dict, name: str) -> str | None:
+    key = _clean_tag_name(name).casefold()
+    return next((t for t in data["tags"] if t.casefold() == key), None) if key else None
+
+
+def _user_tag_summaries(data: dict, hidden: set[str]) -> list[dict]:
+    """Every tag with its VISIBLE item count. A tag used only on hidden (locked) media is
+    omitted entirely — its name alone could leak what a vault holds — while an unused
+    tag (count 0, never applied) still lists so it can be managed."""
+    visible: dict[str, int] = {t: 0 for t in data["tags"]}
+    used_hidden: set[str] = set()
+    for mid, tags in data["items"].items():
+        for t in tags:
+            if mid in hidden:
+                used_hidden.add(t)
+            else:
+                visible[t] = visible.get(t, 0) + 1
+    return [
+        {"name": t, "count": n, "color": data["tags"].get(t, {}).get("color", ""),
+         "created_at": data["tags"].get(t, {}).get("created_at", "")}
+        for t, n in sorted(visible.items(), key=lambda kv: kv[0].casefold())
+        if n or t not in used_hidden
+    ]
+
+
+def _purge_ids_from_user_tags(ids: set) -> None:
+    """Hard delete: drop the ids' tag assignments (the tags themselves stay)."""
+    if not USER_TAGS_FILE.exists():
+        return
+    with _user_tags_lock:
+        try:
+            data = _load_user_tags(strict=True)
+        except CorruptStateError:
+            return
+        if any(mid in ids for mid in data["items"]):
+            data["items"] = {mid: t for mid, t in data["items"].items() if mid not in ids}
+            _save_user_tags(data)
+
+
+@app.get("/api/tags")
+def api_tags_get() -> Response:
+    """User tags with visible usage counts and colors."""
+    return jsonify(tags=_user_tag_summaries(_load_user_tags(), _hidden_media_ids()))
+
+
+@app.post("/api/media/tags")
+def api_media_tags() -> Response:
+    """Add and/or remove user tags on one or many media: ``{ids, add, remove}``. New
+    names are created on the fly (case-insensitively matched to existing ones). Ids the
+    session can't see (locked collections) are ignored."""
+    payload = request.get_json(silent=True) or {}
+    raw_ids = payload.get("ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify(ok=False, error="No items selected."), 400
+    hidden = _hidden_media_ids()
+    ids = list(dict.fromkeys(str(i)[:MAX_MEDIA_ID_LEN] for i in raw_ids[:100000] if str(i)))
+    ids = [i for i in ids if i not in hidden]
+
+    def _names(key: str) -> list[str]:
+        raw = payload.get(key)
+        return [n for n in dict.fromkeys(_clean_tag_name(t) for t in raw[:200]) if n] if isinstance(raw, list) else []
+
+    add, remove = _names("add"), _names("remove")
+    if not add and not remove:
+        return jsonify(ok=False, error="Nothing to add or remove."), 400
+    with _user_tags_lock:
+        try:
+            data = _load_user_tags(strict=True)
+        except CorruptStateError as exc:
+            return jsonify(ok=False, error=str(exc)), 503
+        add_names: list[str] = []
+        for n in add:
+            canon = _find_user_tag(data, n)
+            if not canon:
+                if len(data["tags"]) >= MAX_USER_TAGS:
+                    return jsonify(ok=False, error=f"Tag limit reached ({MAX_USER_TAGS})."), 400
+                data["tags"][n] = {"color": "", "created_at": _utc_stamp()}
+                canon = n
+            add_names.append(canon)
+        remove_keys = {n.casefold() for n in remove}
+        changed: list[str] = []
+        for mid in ids:
+            before = data["items"].get(mid, [])
+            after = [t for t in before if t.casefold() not in remove_keys]
+            for t in add_names:
+                if t not in after:
+                    after.append(t)
+            after = after[:MAX_TAGS_PER_ITEM]
+            if after != before:
+                changed.append(mid)
+                if after:
+                    data["items"][mid] = after
+                else:
+                    data["items"].pop(mid, None)
+        if changed or add_names:
+            _save_user_tags(data)
+        _sync_user_tags_index(data, changed)
+        items = {mid: data["items"].get(mid, []) for mid in ids}
+    return jsonify(ok=True, changed=len(changed), items=items, tags=_user_tag_summaries(data, hidden))
+
+
+@app.post("/api/tags/rename")
+def api_tags_rename() -> Response:
+    """Rename a user tag: ``{from, to}``. Renaming onto another existing tag (any case)
+    MERGES the two — items keep one copy; the target keeps its color (or inherits the
+    source's when it has none)."""
+    payload = request.get_json(silent=True) or {}
+    new = _clean_tag_name(payload.get("to"))
+    if not new:
+        return jsonify(ok=False, error="Tag name cannot be empty."), 400
+    hidden = _hidden_media_ids()
+    with _user_tags_lock:
+        try:
+            data = _load_user_tags(strict=True)
+        except CorruptStateError as exc:
+            return jsonify(ok=False, error=str(exc)), 503
+        old = _find_user_tag(data, payload.get("from"))
+        if not old or old not in {t["name"] for t in _user_tag_summaries(data, hidden)}:
+            return jsonify(ok=False, error="Tag not found."), 404
+        target = _find_user_tag(data, new)
+        merged = bool(target and target != old)
+        old_meta = data["tags"].pop(old)
+        if merged:
+            if not data["tags"][target].get("color"):
+                data["tags"][target]["color"] = old_meta.get("color", "")
+            final = target
+        else:
+            final = new  # a fresh name, or a case-only respelling of the same tag
+            data["tags"][final] = old_meta
+        changed: list[str] = []
+        for mid, tags in data["items"].items():
+            if old in tags:
+                out: list[str] = []
+                for t in tags:
+                    t = final if t == old else t
+                    if t not in out:
+                        out.append(t)
+                data["items"][mid] = out
+                changed.append(mid)
+        _save_user_tags(data)
+        _sync_user_tags_index(data, changed)
+    return jsonify(ok=True, name=final, merged=merged,
+                   renamed=sum(1 for m in changed if m not in hidden),
+                   tags=_user_tag_summaries(data, hidden))
+
+
+@app.post("/api/tags/delete")
+def api_tags_delete() -> Response:
+    """Delete a user tag everywhere: ``{name}`` (media are untouched)."""
+    payload = request.get_json(silent=True) or {}
+    hidden = _hidden_media_ids()
+    with _user_tags_lock:
+        try:
+            data = _load_user_tags(strict=True)
+        except CorruptStateError as exc:
+            return jsonify(ok=False, error=str(exc)), 503
+        name = _find_user_tag(data, payload.get("name"))
+        if not name or name not in {t["name"] for t in _user_tag_summaries(data, hidden)}:
+            return jsonify(ok=False, error="Tag not found."), 404
+        data["tags"].pop(name, None)
+        changed: list[str] = []
+        for mid in list(data["items"]):
+            if name in data["items"][mid]:
+                rest = [t for t in data["items"][mid] if t != name]
+                if rest:
+                    data["items"][mid] = rest
+                else:
+                    data["items"].pop(mid)
+                changed.append(mid)
+        _save_user_tags(data)
+        _sync_user_tags_index(data, changed)
+    return jsonify(ok=True, removed=sum(1 for m in changed if m not in hidden),
+                   tags=_user_tag_summaries(data, hidden))
+
+
+@app.post("/api/tags/color")
+def api_tags_color() -> Response:
+    """Set (``#rrggbb``) or clear (``""``) a user tag's color: ``{name, color}``."""
+    payload = request.get_json(silent=True) or {}
+    raw = str(payload.get("color") or "").strip()
+    color = _clean_tag_color(raw)
+    if raw and not color:
+        return jsonify(ok=False, error="Color must look like #rrggbb."), 400
+    hidden = _hidden_media_ids()
+    with _user_tags_lock:
+        try:
+            data = _load_user_tags(strict=True)
+        except CorruptStateError as exc:
+            return jsonify(ok=False, error=str(exc)), 503
+        name = _find_user_tag(data, payload.get("name"))
+        if not name or name not in {t["name"] for t in _user_tag_summaries(data, hidden)}:
+            return jsonify(ok=False, error="Tag not found."), 404
+        data["tags"][name]["color"] = color
+        _save_user_tags(data)
+    return jsonify(ok=True, name=name, color=color, tags=_user_tag_summaries(data, hidden))
 
 
 # --------------------------------------------------------------------------- #
@@ -6837,7 +7145,7 @@ def _purge_ids_from_collections(ids: set) -> None:
 
 def _delete_ids(ids: set) -> int:
     """Hard-delete the given media ids: remove files from disk, drop from metadata +
-    index, purge from library/playlists/collections, and blocklist the synced ones so
+    index, purge from library/playlists/collections/user tags, and blocklist the synced ones so
     future syncs never re-pull them. Returns the number of metadata records removed.
 
     Strict-loads metadata.json and raises CorruptStateError if it's present but
@@ -6865,6 +7173,7 @@ def _delete_ids(ids: set) -> int:
     _purge_ids_from_library(ids)
     _purge_ids_from_playlists(ids)
     _purge_ids_from_collections(ids)
+    _purge_ids_from_user_tags(ids)
     try:
         db.delete_media(DB_FILE, list(ids))
     except Exception as exc:  # pragma: no cover - defensive
@@ -6970,6 +7279,7 @@ _BACKUP_TARGETS = {
     "collections.json": COLLECTIONS_FILE,
     "collection_groups.json": COLLECTION_GROUPS_FILE,
     "tag_words.json": TAG_WORDS_FILE,
+    "tags.json": USER_TAGS_FILE,
     "playlists.json": PLAYLISTS_FILE,
     "saved_responses.json": RESPONSES_FILE,
     "scenes.json": SCENES_FILE,
@@ -6998,7 +7308,7 @@ _ACCOUNT_ARC_RE = re.compile(r"^grok_accounts/([a-z0-9][a-z0-9-]{2,31})\.txt$")
 # corrupt entry aborts the whole restore rather than half-overwriting live data).
 _BACKUP_JSON_NAMES = {
     "metadata.json", "library.json", "collections.json", "playlists.json",
-    "collection_groups.json", "tag_words.json",
+    "collection_groups.json", "tag_words.json", "tags.json",
     "saved_responses.json", "scenes.json", "personas.json",
     "freeform_presets.json", "deleted_ids.json", "settings.json",
     "grok_accounts.json",
@@ -7046,6 +7356,15 @@ def _count_favorites() -> int:
         return 0
 
 
+def _count_user_tags() -> int:
+    """Number of user tags in tags.json (the generic counter can't see a dict registry)."""
+    try:
+        data = json.loads(USER_TAGS_FILE.read_text(encoding="utf-8"))
+        return len(data.get("tags") or {}) if isinstance(data, dict) else 0
+    except Exception:
+        return 0
+
+
 def _backup_counts() -> dict:
     return {
         "media": _count_records(METADATA_FILE),
@@ -7056,6 +7375,7 @@ def _backup_counts() -> dict:
         "scenes": _count_records(SCENES_FILE),
         "personas": _count_records(PERSONAS_FILE),
         "favorites": _count_favorites(),
+        "tags": _count_user_tags(),
     }
 
 
