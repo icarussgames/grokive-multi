@@ -12,7 +12,7 @@
     searchWidenedFrom, narrowSearch,
     collections, collectionGroups, activeCollectionId, updateCollection, setSubCollectionCover, removeFromCollection, removeCollection, collectionsSettled, ensureMoviePolling, movieChip,
     galleryReload, requestGalleryReload, basket, enqueueBasket, montageMode, isMontageSource, isMontageQueueable,
-    playQueue, enqueuePlayQueue, shuffled
+    playQueue, enqueuePlayQueue, shuffled, loadUserTags, userTagsVersion
   } from '$lib/state.js';
   import TopBar from '$lib/components/TopBar.svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
@@ -33,6 +33,8 @@
   import CollectionLockModal from '$lib/components/CollectionLockModal.svelte';
   import GenerateMovie from '$lib/components/GenerateMovie.svelte';
   import FiltersModal from '$lib/components/FiltersModal.svelte';
+  import TagPickerModal from '$lib/components/TagPickerModal.svelte';
+  import TagManager from '$lib/components/TagManager.svelte';
   import PlaySplitButton from '$lib/components/PlaySplitButton.svelte';
   import MontageStatusChip from '$lib/components/MontageStatusChip.svelte';
   import MontageBasketChip from '$lib/components/MontageBasketChip.svelte';
@@ -92,6 +94,8 @@
   let exportOrder = $state(null); // { items, name } — drives the reorder-before-merge modal (null = closed)
   let importFiles = $state(null); // FileList from a folder Import picker (drives ImportModal)
   let showFilters = $state(false);
+  let showTagPicker = $state(false); // "Tag…" from the SelectBar
+  let showTagManager = $state(false);
   let menuOpen = $state(false); // mobile sidebar drawer
   let sentinel = $state(null);
   let reqId = 0;
@@ -311,10 +315,27 @@
     refreshFacets();
   });
 
+  // A tag edit changes the "My tags" facet counts (and possibly what a tag filter
+  // matches), so refresh facets — but not the grid: items update in place via tagEdits.
+  let _tagSig = 0;
+  $effect(() => {
+    const n = $userTagsVersion;
+    if (n === _tagSig) return;
+    _tagSig = n;
+    refreshFacets();
+  });
+
+  // Show the library filtered to one tag (Tag Manager's row click), from any view.
+  function showTag(tag) {
+    activeCollectionId.set(null);
+    filters.update((f) => ({ ...f, view: 'all', canvas: null, query: '', tags: [tag], models: [], resolutions: [], mediaType: 'all', period: 'all' }));
+  }
+
   onMount(async () => {
     applyLibrary(await fetchLibrary());
     loadPlaylists();
     loadCollections();
+    loadUserTags();
     loadSettings();
     // Detect any montage render already in flight (e.g. started in another tab or
     // before a reload) so the Montage button animates and the panel can reconnect.
@@ -795,7 +816,7 @@
        playlists) doesn't apply there, so hide it for that view. -->
   {#if $filters.view !== 'studio' && $filters.view !== 'imagine' && !onCollectionsLanding}
     <aside class="hidden w-80 shrink-0 overflow-y-auto border-r border-line lg:block" style="height: calc(100dvh - 56px)">
-      <Sidebar {facets} onbrowse={() => (showFilters = true)} />
+      <Sidebar {facets} onbrowse={() => (showFilters = true)} onmanagetags={() => (showTagManager = true)} />
     </aside>
   {/if}
 
@@ -1191,6 +1212,7 @@
     onplay={playSelection}
     onreorderexport={reorderSelectionExport}
     oncollections={() => (showCollectionPicker = true)}
+    ontags={() => (showTagPicker = true)}
     onnested={() => (showNestedModal = true)}
     onmovie={() => { movieVideoIds = montageSelectionIds; if (selectionHasImage) montageMode.set('picture-video'); showMovie = true; }}
     onbasket={enqueueSelectionToBasket}
@@ -1225,6 +1247,15 @@
 
 {#if showCollectionPicker}
   <CollectionPickerModal ids={$selection} currentCollection={activeCollection} onclose={() => (showCollectionPicker = false)} />
+{/if}
+
+{#if showTagPicker}
+  <TagPickerModal ids={$selection} onclose={() => (showTagPicker = false)}
+    onmanage={() => { showTagPicker = false; showTagManager = true; }} />
+{/if}
+
+{#if showTagManager}
+  <TagManager onclose={() => (showTagManager = false)} onshow={showTag} />
 {/if}
 
 {#if showNestedModal && activeCollection}
@@ -1284,7 +1315,7 @@
 <ScrollToTop lift={$selectMode || !!$movieChip} />
 
 {#if showFilters}
-  <FiltersModal {facets} onclose={() => (showFilters = false)} />
+  <FiltersModal {facets} onclose={() => (showFilters = false)} onmanagetags={() => { showFilters = false; showTagManager = true; }} />
 {/if}
 
 <!-- Mobile navigation drawer: the desktop sidebar (filters + playlists + models)
@@ -1305,7 +1336,8 @@
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto">
         <Sidebar {facets}
-          onbrowse={() => { menuOpen = false; showFilters = true; }} />
+          onbrowse={() => { menuOpen = false; showFilters = true; }}
+          onmanagetags={() => { menuOpen = false; showTagManager = true; }} />
       </div>
     </div>
   </div>

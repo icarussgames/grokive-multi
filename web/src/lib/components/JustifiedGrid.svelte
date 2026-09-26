@@ -1,6 +1,6 @@
 <script>
   import { justify } from '$lib/justified.js';
-  import { favorites, stashed, toggleFavorite, setStashed, removeMedia, setSelection, addSelection, setSelectMode, selectionMembers, sendToImagine, toggleBasket, basketMembers, queueImageForMontage, togglePlayQueue, playQueueMembers, collections, deleteMembershipNote } from '$lib/state.js';
+  import { favorites, stashed, toggleFavorite, setStashed, removeMedia, setSelection, addSelection, setSelectMode, selectionMembers, sendToImagine, toggleBasket, basketMembers, queueImageForMontage, togglePlayQueue, playQueueMembers, collections, deleteMembershipNote, tagEdits, userTagsOf, userTags } from '$lib/state.js';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import PeekOverlay from './PeekOverlay.svelte';
 
@@ -25,6 +25,7 @@
   let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight || 0 : 0);
   let gridTop = $state(0);
   const rows = $derived(width ? justify(items, width, targetHeight, gap) : []);
+  const colorOf = $derived(new Map(($userTags || []).map((t) => [t.name, t.color])));
   const VIRTUAL_MIN_ROWS = 40;
   const VIRTUAL_OVERSCAN = 1200;
   const rowOffsets = $derived.by(() => {
@@ -272,6 +273,8 @@
         {@const fav = $favorites.has(it.id)}
         {@const sel = selectionMembers.has(it.id)}
         {@const isMontage = it.model === 'Beat Montage'}
+        {@const mine = userTagsOf(it, $tagEdits)}
+        {@const tint = colorOf.get(mine.find((t) => colorOf.get(t)))}
         <!-- The real click target is the Open/select button below. data-id lets the
              auto-scroll hit-test (elementFromPoint) map a point back to a card. -->
         <div class="card-frame group relative shrink-0 select-none overflow-hidden rounded-card bg-surface-2" role="presentation"
@@ -322,6 +325,13 @@
               </span>
             {/if}
             {#if it.has_subtitles}<span class="meta-badge">CC</span>{/if}
+            {#if mine.length}
+              <!-- Hand-assigned tags: a tag glyph + count, tinted by the first colored tag. -->
+              <span class="meta-badge meta-badge-tags" title={mine.join(', ')} aria-label={`Tags: ${mine.join(', ')}`}
+                style={tint ? `color:${tint}` : ''}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/></svg>{mine.length}
+              </span>
+            {/if}
           </span>
 
           <!-- Selection circle, top-left: always shown in select mode, on hover
@@ -460,6 +470,15 @@
 
   .meta-badge-video {
     padding-inline: 0.5rem;
+  }
+
+  .meta-badge-tags {
+    gap: 3px;
+  }
+
+  .meta-badge-tags svg {
+    height: 0.7rem;
+    width: 0.7rem;
   }
 
   /* Music-montage marker: accent-filled pill with a music-note glyph, matching the

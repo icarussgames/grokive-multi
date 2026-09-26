@@ -13,7 +13,7 @@
 
   // montageIds: selected sources eligible for a montage — videos AND still images (queuing
   // an image enters picture-video mode). videoIds stays video-only for Play/Playlist/Export.
-  let { videoIds = [], imageIds = [], montageIds = [], selectableIds = [], collection = null, onplay = () => {}, onreorderexport = () => {}, oncollections = () => {}, onnested = () => {}, onremovefromcollection = () => {}, onmovie = () => {}, onbasket = () => {}, onplayqueue = () => {} } = $props();
+  let { videoIds = [], imageIds = [], montageIds = [], selectableIds = [], collection = null, onplay = () => {}, onreorderexport = () => {}, oncollections = () => {}, onnested = () => {}, onremovefromcollection = () => {}, onmovie = () => {}, onbasket = () => {}, onplayqueue = () => {}, ontags = () => {} } = $props();
   let name = $state('');
   let busy = $state(false);
   let confirmingDelete = $state(false);
@@ -145,6 +145,10 @@
       <button class="select-btn" onclick={() => oncollections()} title={collection ? 'Move/Add to Collection' : 'Add to Collection'} aria-label={collection ? 'Move/Add to Collection' : 'Add to Collection'}>
         <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><path d="M12 10v6"/><path d="M9 13h6"/></svg>
         {#if collection}<span class="btn-word">Move/Add</span>{/if}
+      </button>
+      <button class="select-btn" onclick={() => ontags()} disabled={!n} title="Tag selected items" aria-label="Tag selected items">
+        <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></svg>
+        <span class="btn-word">Tag…</span>
       </button>
       {#if collection}
         <!-- Nested collections are one level deep: the button hides inside a child

@@ -97,6 +97,7 @@ All state (`grok_auth.txt` + `grok_accounts.json`/`grok_accounts/` (Grok account
 sessions), `metadata.json`, `index.db` (the derived SQLite
 read-model), `library.json` (favorites/archive), `deleted_ids.json` (delete blocklist),
 `playlists.json`, `collections.json`, `collection_groups.json` (collection group lock state),
+`tags.json` (your hand-assigned media tags + tag colors),
 `settings.json`, `scenes.json` (saved Scene Builder scenes), `saved_responses.json` (starred
 prompts), `personas.json` (Prompt Studio persona cards), `freeform_presets.json` (saved Freeform request presets), `prompt_studio.db`
 (durable prompt embeddings), `imagine_sessions.json` + `imagine_staging/` (un-saved Grok
@@ -300,6 +301,14 @@ Flask API (`/api/media`, `/api/facets`, …). Highlights:
   filters (last hour … this year, from the Display popover); sort by newest, oldest, largest,
   smallest, prompt A-Z, or model A-Z; one-click reset (the "Grokive" wordmark or the
   *Reset filters* chip).
+- **My tags:** label media with your own tags alongside the automatic prompt tags. Add or
+  remove them on an item from the lightbox info panel (autocomplete over your existing tags,
+  plus one-click *Suggested* chips lifted from the prompt), or select many items and use
+  **Tag…** in the select bar (each tag shows how many of the selection carry it, e.g. *on 3
+  of 5*). Filter by them from the sidebar / filters modal with a **Match any / Match all**
+  toggle, and open **Manage tags** to rename (renaming onto an existing tag merges them),
+  recolor, or delete. Cards carry a small tag badge. Stored in `tags.json` (included in
+  backups); tags on media in a locked collection stay hidden until it's unlocked.
 - **Favorites & Archive:** hover a card for ♥ (favorite) and the archive icon (hide from
   Recent; reversible from the Archive view).
 - **Select mode:** multi-select (drag-to-paint with edge auto-scroll on desktop, long-press

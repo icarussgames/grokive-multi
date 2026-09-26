@@ -5,7 +5,8 @@ import {
   fetchCollections, saveCollections,
   getSettings, deleteMedia, movieStatus, dismissMovie,
   fetchSavedResponses, saveSavedResponses, addSavedResponseRemote, starResponseRemote, deleteResponseRemote, importLibraryPrompts, reorganizeSavedResponses,
-  getImagineSessions, imagineJobsAll
+  getImagineSessions, imagineJobsAll,
+  fetchTags, editMediaTags, renameTag as renameTagRemote, deleteTag as deleteTagRemote, setTagColor as setTagColorRemote
 } from './api.js';
 import { toast } from './toast.js';
 
@@ -105,6 +106,7 @@ export const filters = writable({
   view: 'recent', // recent | all | collections | favorites | archive | canvases
   query: '',
   tags: [],
+  tagMode: 'any', // any | all — how several selected tags combine (a preference: survives view changes)
   models: [],
   resolutions: [], // selected "<shorter-side>-<orientation>" buckets, e.g. ['720-landscape', '720-portrait']
   canvas: null,
@@ -196,6 +198,9 @@ export function toggleTag(tag) {
     ...f,
     tags: f.tags.includes(tag) ? f.tags.filter((t) => t !== tag) : [...f.tags, tag]
   }));
+}
+export function setTagMode(tagMode) {
+  filters.update((f) => ({ ...f, tagMode: tagMode === 'all' ? 'all' : 'any' }));
 }
 export function toggleModel(model) {
   filters.update((f) => ({
@@ -1040,6 +1045,124 @@ export function ensureImaginePolling() {
 export const galleryReload = writable(0);
 export function requestGalleryReload() {
   galleryReload.update((n) => n + 1);
+}
+
+// --- User tags (hand-assigned, server-owned in tags.json) --------------------
+// `userTags` is the tag list with visible counts + colors. Loaded media carry a
+// `user_tags` snapshot from fetch time; edits made since then live in `tagEdits` so every
+// surface (grid markers, lightbox chips, picker counts) reflects them without a refetch:
+// `overrides` holds the server's post-edit list per item (authoritative), `aliases`
+// maps renamed/deleted names (old -> new, or null = deleted) for items not re-fetched.
+export const userTags = writable([]);
+export const tagEdits = writable({ overrides: new Map(), aliases: new Map() });
+// Bumped after any tag edit so the page can refresh its facet counts.
+export const userTagsVersion = writable(0);
+
+export async function loadUserTags() {
+  userTags.set(await fetchTags());
+}
+export function userTagsOf(item, edits = get(tagEdits)) {
+  if (!item) return [];
+  const own = edits.overrides.get(String(item.id));
+  if (own) return own;
+  const out = [];
+  for (const raw of item.user_tags || []) {
+    let t = raw;
+    for (let hops = 0; hops < 20 && t != null && edits.aliases.has(t.toLowerCase()); hops++) {
+      t = edits.aliases.get(t.toLowerCase());
+    }
+    if (t != null && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+export function tagColor(name, list = get(userTags)) {
+  return list.find((t) => t.name === name)?.color || '';
+}
+function afterTagEdit(res) {
+  if (Array.isArray(res?.tags)) userTags.set(res.tags);
+  userTagsVersion.update((n) => n + 1);
+}
+// Add and/or remove tags on items. Resolves true on success (errors toast).
+export async function tagItems(ids, { add = [], remove = [] } = {}) {
+  const clean = (ids || []).map(String).filter(Boolean);
+  if (!clean.length || (!add.length && !remove.length)) return false;
+  try {
+    const res = await editMediaTags(clean, { add, remove });
+    tagEdits.update((e) => {
+      const overrides = new Map(e.overrides);
+      for (const [id, tags] of Object.entries(res.items || {})) overrides.set(id, tags);
+      // A name created again after a rename/delete is a NEW tag — stop aliasing it.
+      const aliases = new Map(e.aliases);
+      for (const n of add) aliases.delete(String(n).trim().toLowerCase());
+      return { overrides, aliases };
+    });
+    afterTagEdit(res);
+    return true;
+  } catch (e) {
+    toast(`Couldn't update tags: ${e.message}`, { type: 'error' });
+    return false;
+  }
+}
+// Rewrite a renamed/deleted tag everywhere it's held client-side: overrides, the active
+// filter chips, and the alias table (for item snapshots loaded before the edit).
+function remapTag(from, to) {
+  const key = String(from).toLowerCase();
+  tagEdits.update((e) => {
+    const overrides = new Map();
+    for (const [id, tags] of e.overrides) {
+      const next = [];
+      for (const t of tags) {
+        const v = t.toLowerCase() === key ? to : t;
+        if (v != null && !next.includes(v)) next.push(v);
+      }
+      overrides.set(id, next);
+    }
+    const aliases = new Map(e.aliases);
+    // The destination name is live again, so nothing may alias away from it (this also
+    // keeps a rename-back, a -> b -> a, from forming a cycle).
+    if (to != null) aliases.delete(String(to).toLowerCase());
+    if (to == null || String(to).toLowerCase() !== key) aliases.set(key, to);
+    return { overrides, aliases };
+  });
+  filters.update((f) => {
+    if (!f.tags.includes(from)) return f;
+    const tags = f.tags.filter((t) => t !== from);
+    if (to != null && !tags.includes(to)) tags.push(to);
+    return { ...f, tags };
+  });
+}
+export async function renameUserTag(from, to) {
+  try {
+    const res = await renameTagRemote(from, to);
+    remapTag(from, res.name);
+    afterTagEdit(res);
+    toast(res.merged ? `Merged “${from}” into “${res.name}”` : `Renamed to “${res.name}”`);
+    return res;
+  } catch (e) {
+    toast(`Couldn't rename tag: ${e.message}`, { type: 'error' });
+    return null;
+  }
+}
+export async function deleteUserTag(name) {
+  try {
+    const res = await deleteTagRemote(name);
+    remapTag(name, null);
+    afterTagEdit(res);
+    toast(`Deleted tag “${name}”`);
+    return true;
+  } catch (e) {
+    toast(`Couldn't delete tag: ${e.message}`, { type: 'error' });
+    return false;
+  }
+}
+export async function setUserTagColor(name, color) {
+  try {
+    afterTagEdit(await setTagColorRemote(name, color));
+    return true;
+  } catch (e) {
+    toast(`Couldn't set color: ${e.message}`, { type: 'error' });
+    return false;
+  }
 }
 
 // --- Saved Prompt Studio responses (starred outputs, server-persisted) ------

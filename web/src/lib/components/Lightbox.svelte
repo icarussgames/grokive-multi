@@ -44,6 +44,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte';
   import VisionPrompt from './VisionPrompt.svelte';
   import SubtitleStyleModal from './SubtitleStyleModal.svelte';
+  import TagEditor from './TagEditor.svelte';
 
   async function copy(e, text) {
     const b = e.currentTarget;
@@ -394,6 +395,9 @@
     // The subtitle-style dialog owns the keyboard while open (it handles its own
     // Escape); don't let arrows/Escape also drive the player underneath.
     if (showSubStyle) return;
+    // Typing in the tag field must not drive the player (arrows, f / i / h, Delete…);
+    // the field handles its own Escape (closes its suggestions, then blurs).
+    if (e.target?.dataset && 'tagInput' in e.target.dataset) return;
     if (e.key === 'Escape') { if (document.fullscreenElement) return; if (showVision) { showVision = false; return; } if (showInfo) { showInfo = false; return; } close(); }
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === 'ArrowRight') step(1);
@@ -618,9 +622,10 @@
             {/each}
           </div>
         {/if}
+        <TagEditor {item} onbrowse={browseTag} />
         {#if item.tags?.length}
           <div class="mb-3 flex flex-wrap items-center gap-2">
-            <span class="text-xs font-bold uppercase tracking-wide text-muted">Tags</span>
+            <span class="text-xs font-bold uppercase tracking-wide text-muted">Prompt tags</span>
             {#each item.tags as tag (tag)}
               <!-- A tag can be a whole spoken line: wrap it as a soft bubble, not a stretched pill. -->
               <button type="button" class="max-w-full rounded-2xl border border-line px-3 py-1 text-left text-xs font-semibold transition hover:border-[var(--accent)]"

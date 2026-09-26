@@ -23,6 +23,7 @@ export function fetchMedia(f, page = 1, pageSize = 120, collectionId = null) {
   if (f.query) p.set('q', f.query);
   // One param per tag, never comma-joined: a tag is a phrase and can contain commas.
   for (const t of f.tags || []) p.append('tags', t);
+  if (f.tags?.length && f.tagMode === 'all') p.set('tag_mode', 'all');
   if (f.models?.length) p.set('models', f.models.join(','));
   if (f.resolutions?.length) p.set('res', f.resolutions.join(','));
   if (f.canvas) p.set('canvas', f.canvas);
@@ -44,6 +45,7 @@ export function fetchFacets(f = {}, collectionId = null) {
   // (e.g. selecting tags narrows the resolution/model chips). The server excludes
   // each facet's own dimension so its full option list stays visible.
   for (const t of f.tags || []) p.append('tags', t);
+  if (f.tags?.length && f.tagMode === 'all') p.set('tag_mode', 'all');
   if (f.models?.length) p.set('models', f.models.join(','));
   if (f.resolutions?.length) p.set('res', f.resolutions.join(','));
   if (f.canvas) p.set('canvas', f.canvas);
@@ -89,6 +91,26 @@ export async function fetchCollections() {
   }
 }
 export const saveCollections = (collections) => saveJSON('/api/collections', { collections });
+
+// --- User tags (hand-assigned) ----------------------------------------------
+// Every mutation returns the refreshed tag list ({ tags: [{ name, count, color }] }) so
+// callers can update the store from one round-trip. Errors throw with the server message.
+async function postTags(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let data = {};
+  try { data = await res.json(); } catch {}
+  if (!res.ok || data.ok === false) throw new Error(data.error || `${res.status} ${res.statusText}`);
+  return data;
+}
+export async function fetchTags() {
+  try { return (await getJSON('/api/tags')).tags || []; } catch { return []; }
+}
+// Bulk add/remove on any number of items. Returns { changed, items: {id: [tags]}, tags }.
+export const editMediaTags = (ids, { add = [], remove = [] } = {}) => postTags('/api/media/tags', { ids, add, remove });
+// Renaming onto an existing tag merges the two ({ merged: true }).
+export const renameTag = (from, to) => postTags('/api/tags/rename', { from, to });
+export const deleteTag = (name) => postTags('/api/tags/delete', { name });
+export const setTagColor = (name, color) => postTags('/api/tags/color', { name, color });
 
 // --- Export (streamed MP4 download) ----------------------------------------
 async function downloadBlob(response, name) {

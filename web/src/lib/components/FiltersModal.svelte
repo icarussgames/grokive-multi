@@ -1,10 +1,17 @@
 <script>
-  import { filters, toggleTag, toggleModel, toggleResolution, setMediaType, clearFilters } from '$lib/state.js';
+  import { filters, toggleTag, toggleModel, toggleResolution, setMediaType, clearFilters, userTags, setTagMode } from '$lib/state.js';
   import Modal from './Modal.svelte';
   import Button from './Button.svelte';
   import SearchField from './SearchField.svelte';
 
-  let { facets = { tags: [], models: [] }, onclose = () => {} } = $props();
+  let { facets = { tags: [], models: [] }, onclose = () => {}, onmanagetags = null } = $props();
+  // Hand-assigned tags (scoped counts from facets.user_tags), filtered by the same box.
+  const myTags = $derived.by(() => {
+    const inScope = new Map((facets.user_tags || []).map((t) => [t.name, t.count]));
+    return ($userTags || [])
+      .filter((t) => !q || t.name.toLowerCase().includes(q.toLowerCase()))
+      .map((t) => ({ ...t, scoped: inScope.get(t.name) || 0 }));
+  });
   let q = $state('');
 
   // Tags are phrases now (spoken lines included), so the full list runs to thousands:
@@ -55,7 +62,28 @@
       {/if}
 
       <div class="mb-5">
-        <div class="mb-2 text-xs font-bold uppercase tracking-wider text-muted">Tags · {matching.length}</div>
+        <div class="mb-2 flex items-center gap-3">
+          <span class="text-xs font-bold uppercase tracking-wider text-muted">My tags · {myTags.length}</span>
+          {#if onmanagetags}<button class="text-xs font-semibold text-[var(--accent)] hover:underline" onclick={onmanagetags}>Manage…</button>{/if}
+          <div class="ml-auto inline-flex rounded-md border border-line p-0.5 text-xs font-semibold" role="group" aria-label="Match selected tags">
+            <button class="rounded px-2.5 py-0.5 {$filters.tagMode !== 'all' ? 'bg-[var(--surface-2)]' : 'text-muted'}" title="Items with ANY selected tag" onclick={() => setTagMode('any')}>Match any</button>
+            <button class="rounded px-2.5 py-0.5 {$filters.tagMode === 'all' ? 'bg-[var(--surface-2)]' : 'text-muted'}" title="Items with ALL selected tags" onclick={() => setTagMode('all')}>Match all</button>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          {#each myTags as t (t.name)}
+            <button class="inline-flex max-w-full items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-semibold transition {$filters.tags.includes(t.name) ? 'border-transparent bg-[var(--accent)] text-[var(--on-accent)]' : 'border-[var(--chip-line)] bg-[var(--chip-bg)] text-[var(--chip-ink)] hover:border-[var(--accent)]'}"
+              title={t.name} onclick={() => toggleTag(t.name)}>
+              {#if t.color}<span class="h-2 w-2 shrink-0 rounded-full" style="background:{t.color}"></span>{/if}
+              <span class="truncate">{t.name}</span><span class="text-xs opacity-60">{t.scoped}</span>
+            </button>
+          {/each}
+          {#if !myTags.length}<p class="text-sm text-muted">{q ? `None of your tags match “${q}”.` : 'No tags of your own yet.'}</p>{/if}
+        </div>
+      </div>
+
+      <div class="mb-5">
+        <div class="mb-2 text-xs font-bold uppercase tracking-wider text-muted">Prompt tags · {matching.length}</div>
         <div class="flex flex-wrap items-baseline gap-2">
           {#each shown as t (t.name)}
             <button class="max-w-full truncate rounded-full px-2.5 py-1 leading-none transition {$filters.tags.includes(t.name) ? 'bg-[var(--accent)] text-[var(--on-accent)]' : 'border border-line hover:border-[var(--accent)]'}"

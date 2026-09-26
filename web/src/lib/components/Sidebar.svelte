@@ -1,10 +1,17 @@
 <script>
-  import { filters, toggleTag, toggleModel, toggleResolution, clearFilters } from '$lib/state.js';
+  import { filters, toggleTag, toggleModel, toggleResolution, clearFilters, userTags, setTagMode } from '$lib/state.js';
   import Collapsible from './Collapsible.svelte';
 
-  let { facets = { tags: [], models: [] }, onbrowse = () => {} } = $props();
+  let { facets = { tags: [], models: [] }, onbrowse = () => {}, onmanagetags = () => {} } = $props();
 
   const topTags = $derived((facets.tags || []).slice(0, 12));
+  // Hand-assigned tags, counted within the current scope (facets.user_tags); a tag with no
+  // match in scope still lists (count 0) so it stays one click away.
+  const myTags = $derived.by(() => {
+    const inScope = new Map((facets.user_tags || []).map((t) => [t.name, t.count]));
+    return ($userTags || []).map((t) => ({ ...t, scoped: inScope.get(t.name) || 0 }))
+      .sort((a, b) => b.scoped - a.scoped || a.name.localeCompare(b.name));
+  });
 </script>
 
 <!-- Filters only. Media type lives in the grid header (high-frequency, applies everywhere) and
@@ -24,7 +31,33 @@
     </Collapsible>
   {/if}
 
-  <Collapsible title="Tags">
+  <Collapsible title="My tags" count={myTags.length}>
+    {#if myTags.length}
+      <div class="flex flex-wrap gap-1.5">
+        {#each myTags as t (t.name)}
+          {@const on = $filters.tags.includes(t.name)}
+          <button class="inline-flex max-w-full items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold transition {on ? 'border-transparent bg-[var(--accent)] text-[var(--on-accent)]' : 'border-[var(--chip-line)] bg-[var(--chip-bg)] text-[var(--chip-ink)] hover:border-[var(--accent)]'}"
+            title={t.name} onclick={() => toggleTag(t.name)}>
+            {#if t.color}<span class="h-2 w-2 shrink-0 rounded-full" style="background:{t.color}"></span>{/if}
+            <span class="truncate">{t.name}</span> <span class="shrink-0 opacity-70">{on ? '✕' : t.scoped}</span>
+          </button>
+        {/each}
+      </div>
+    {:else}
+      <p class="text-xs text-muted">No tags yet — add them from an item's info panel or select items and use Tag….</p>
+    {/if}
+    <div class="mt-2.5 flex items-center justify-between gap-2">
+      <button class="text-xs font-semibold text-[var(--accent)] hover:underline" onclick={onmanagetags}>Manage tags →</button>
+      {#if $filters.tags.length > 1}
+        <div class="inline-flex rounded-md border border-line p-0.5 text-[11px] font-semibold" role="group" aria-label="Match selected tags">
+          <button class="rounded px-2 py-0.5 {$filters.tagMode !== 'all' ? 'bg-[var(--surface-2)]' : 'text-muted'}" title="Items with ANY selected tag" onclick={() => setTagMode('any')}>Any</button>
+          <button class="rounded px-2 py-0.5 {$filters.tagMode === 'all' ? 'bg-[var(--surface-2)]' : 'text-muted'}" title="Items with ALL selected tags" onclick={() => setTagMode('all')}>All</button>
+        </div>
+      {/if}
+    </div>
+  </Collapsible>
+
+  <Collapsible title="Prompt tags">
     {#if $filters.tags.length}
       <div class="mb-2 flex flex-wrap gap-1.5">
         {#each $filters.tags as t (t)}
