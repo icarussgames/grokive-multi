@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { startSync, startSubtitles, syncStatus } from '$lib/api.js';
-  import { settings, loadSettings } from '$lib/state.js';
+  import { settings, loadSettings, jobKick, loadGrokAccounts } from '$lib/state.js';
   import { portal } from '$lib/portal.js';
   import { toast } from '$lib/toast.js';
   import { copyText } from '$lib/clipboard.js';
@@ -49,11 +49,13 @@
       observedRunning = false;
       mediaRefreshed = false;
       const subs = status.job === 'subtitles';
+      const attr = status.job === 'attribute';
+      loadGrokAccounts(); // a sync may follow an account rename/add in Config
       if (status.step === 'done') {
         onrefresh();
-        toast(subs ? 'Subtitles generated' : 'Sync complete', { type: 'success' });
+        toast(subs ? 'Subtitles generated' : attr ? 'Accounts attributed' : 'Sync complete', { type: 'success' });
       } else if (status.step === 'error') {
-        toast(status.auth_hint ? 'Sync failed — check your Grok auth' : `${subs ? 'Subtitles' : 'Sync'} failed`, { type: 'error' });
+        toast(status.auth_hint ? 'Sync failed — check your Grok auth' : `${subs ? 'Subtitles' : attr ? 'Re-attribution' : 'Sync'} failed`, { type: 'error' });
         showLog = true; // surface the log so the failure detail is one glance away
       }
     }
@@ -68,11 +70,19 @@
   }
 
   onMount(() => { loadSettings(); poll(); });
+  // Another surface started a job (the account switcher's Re-attribute): start watching it.
+  let _kickSeen = 0;
+  $effect(() => {
+    const n = $jobKick;
+    if (n === _kickSeen) return;
+    _kickSeen = n;
+    kick();
+  });
   onDestroy(() => clearTimeout(timer));
 
   // Friendly labels for the optional Autonomous Mode post-sync steps (server step names
   // are terse). Everything else shows its raw step name, as before.
-  const STEP_LABELS = { embed: 'Updating prompt index', library: 'Importing prompts', subtitles: 'Generating subtitles', autotag: 'Tagging prompts' };
+  const STEP_LABELS = { embed: 'Updating prompt index', library: 'Importing prompts', subtitles: 'Generating subtitles', autotag: 'Tagging prompts', attribute: 'Listing account' };
   // Multi-account syncs suffix the per-account steps with the account name —
   // "download [Personal]" — so split that back into (base step, account) for display.
   const stepParts = (s) => {
@@ -83,7 +93,7 @@
   const stepLabel = (s) => { const [base, acct] = stepParts(s); return withAccount(STEP_LABELS[base] || base, acct); };
   const stepTitle = (name) => { const [base, acct] = stepParts(name); return withAccount(STEP_LABELS[base] || title(base), acct); };
   const pillText = $derived(
-    status.running ? `${status.job === 'subtitles' ? 'Subtitles' : 'Syncing'}: ${stepLabel(status.step)}`
+    status.running ? `${status.job === 'subtitles' ? 'Subtitles' : status.job === 'attribute' ? 'Attributing' : 'Syncing'}: ${stepLabel(status.step)}`
       : status.step === 'error' ? (status.auth_hint ? 'Auth failed' : 'Failed')
       : status.step === 'done' ? 'Synced' : 'Ready'
   );

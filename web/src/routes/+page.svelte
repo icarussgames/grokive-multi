@@ -12,7 +12,7 @@
     searchWidenedFrom, narrowSearch,
     collections, collectionGroups, activeCollectionId, updateCollection, setSubCollectionCover, removeFromCollection, removeCollection, collectionsSettled, ensureMoviePolling, movieChip,
     galleryReload, requestGalleryReload, basket, enqueueBasket, montageMode, isMontageSource, isMontageQueueable,
-    playQueue, enqueuePlayQueue, shuffled, loadUserTags, userTagsVersion
+    playQueue, enqueuePlayQueue, shuffled, loadUserTags, userTagsVersion, accountCounts
   } from '$lib/state.js';
   import TopBar from '$lib/components/TopBar.svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
@@ -299,6 +299,7 @@
     try {
       facets = await fetchFacets($filters, $activeCollectionId);
       if (!scoped) canvasLanding = facets.canvases || [];
+      accountCounts.set(facets.accounts || []);
     } catch {}
   }
 

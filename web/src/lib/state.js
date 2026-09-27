@@ -6,6 +6,7 @@ import {
   getSettings, deleteMedia, movieStatus, dismissMovie,
   fetchSavedResponses, saveSavedResponses, addSavedResponseRemote, starResponseRemote, deleteResponseRemote, importLibraryPrompts, reorganizeSavedResponses,
   getImagineSessions, imagineJobsAll,
+  getAccounts, startAttribute,
   fetchTags, editMediaTags, renameTag as renameTagRemote, deleteTag as deleteTagRemote, setTagColor as setTagColorRemote
 } from './api.js';
 import { toast } from './toast.js';
@@ -107,6 +108,10 @@ export const filters = writable({
   query: '',
   tags: [],
   tagMode: 'any', // any | all — how several selected tags combine (a preference: survives view changes)
+  // Master account switch: 'all' | a Grok account id | '__unknown__' (not yet attributed) |
+  // '__local__' (imports / montages / API generations). Persisted per device; survives
+  // view changes and filter resets — it scopes everything until switched back.
+  account: (() => { const v = LS('ga.account', 'all'); return typeof v === 'string' && v ? v : 'all'; })(),
   models: [],
   resolutions: [], // selected "<shorter-side>-<orientation>" buckets, e.g. ['720-landscape', '720-portrait']
   canvas: null,
@@ -115,6 +120,46 @@ export const filters = writable({
   uncollected: false, // Archive-view toggle: only items in NO collection or sub-collection
   sort: 'new'
 });
+
+filters.subscribe((f) => persist('ga.account', f.account || 'all'));
+
+// --- Grok accounts (master switch) ------------------------------------------
+export const UNKNOWN_ACCOUNT = '__unknown__';
+export const LOCAL_ACCOUNT = '__local__';
+export const grokAccounts = writable([]); // [{ id, name, active, configured }]
+export const accountCounts = writable([]); // facets.accounts for the current scope: [{ id, count }]
+// Bumped when some other surface starts a server job (e.g. re-attribution) so the
+// status pill starts polling it.
+export const jobKick = writable(0);
+export async function loadGrokAccounts() {
+  let list = [];
+  try { list = (await getAccounts()).accounts || []; } catch { return; }
+  grokAccounts.set(list);
+  // A remembered account that no longer exists would pin the library to an empty view.
+  const cur = get(filters).account;
+  if (cur && cur !== 'all' && cur !== UNKNOWN_ACCOUNT && cur !== LOCAL_ACCOUNT && !list.some((a) => a.id === cur)) {
+    setAccount('all');
+  }
+}
+export function setAccount(account) {
+  filters.update((f) => ({ ...f, account: account || 'all' }));
+}
+export function accountLabel(id, list = get(grokAccounts)) {
+  if (id === UNKNOWN_ACCOUNT) return 'Unknown account';
+  if (id === LOCAL_ACCOUNT) return 'Local (imports & generated)';
+  const a = list.find((x) => x.id === id);
+  return a ? a.name : `Removed account (${id})`;
+}
+export async function reattributeAccounts() {
+  const r = await startAttribute();
+  if (r.ok) {
+    jobKick.update((n) => n + 1);
+    toast('Re-attributing accounts — listing each account on Grok (nothing is downloaded). Progress is in the job log.', { type: 'success' });
+  } else {
+    toast(r.error || "Couldn't start re-attribution", { type: 'error' });
+  }
+  return r.ok;
+}
 
 // Set while a search typed on Recent has been auto-widened to All Media, holding the view
 // to fall back to. Recent is "everything except Archive" — with roughly half the library

@@ -24,6 +24,7 @@ export function fetchMedia(f, page = 1, pageSize = 120, collectionId = null) {
   // One param per tag, never comma-joined: a tag is a phrase and can contain commas.
   for (const t of f.tags || []) p.append('tags', t);
   if (f.tags?.length && f.tagMode === 'all') p.set('tag_mode', 'all');
+  if (f.account && f.account !== 'all') p.set('account', f.account);
   if (f.models?.length) p.set('models', f.models.join(','));
   if (f.resolutions?.length) p.set('res', f.resolutions.join(','));
   if (f.canvas) p.set('canvas', f.canvas);
@@ -46,6 +47,7 @@ export function fetchFacets(f = {}, collectionId = null) {
   // each facet's own dimension so its full option list stays visible.
   for (const t of f.tags || []) p.append('tags', t);
   if (f.tags?.length && f.tagMode === 'all') p.set('tag_mode', 'all');
+  if (f.account && f.account !== 'all') p.set('account', f.account);
   if (f.models?.length) p.set('models', f.models.join(','));
   if (f.resolutions?.length) p.set('res', f.resolutions.join(','));
   if (f.canvas) p.set('canvas', f.canvas);
@@ -350,6 +352,14 @@ export const getStats = () => getJSON(`/api/stats?tz_offset=${-new Date().getTim
 // Grok accounts: named cURL sessions. { accounts: [{ id, name, active, configured, mtime }] }
 // — the pasted cURL itself is write-only and never comes back.
 export const getAccounts = () => getJSON('/api/accounts');
+// Re-attribution job: re-list every account on Grok (no downloads) and record which
+// account each held item belongs to. Runs in the shared sync job slot. -> { ok, error? }
+export async function startAttribute(ids = null) {
+  const res = await fetch('/api/accounts/attribute', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids ? { ids } : {})
+  });
+  try { return await res.json(); } catch { return { ok: false, error: `${res.status}` }; }
+}
 export const createAccount = (body) =>
   fetch('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 export const updateAccount = (id, body) =>

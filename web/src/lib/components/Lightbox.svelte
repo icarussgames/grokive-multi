@@ -36,7 +36,7 @@
 <script>
   import { onDestroy } from 'svelte';
   import { fade, fly } from 'svelte/transition';
-  import { favorites, toggleFavorite, removeMedia, deleted, sendToImagine, toggleBasket, basketMembers, togglePlayQueue, playQueueMembers, queueImageForMontage, captionVideoHeight, slideSeconds, setSlideSeconds, lightboxChrome, collections, filters, activeCollectionId, removeFromCollection, deleteMembershipNote } from '$lib/state.js';
+  import { favorites, toggleFavorite, removeMedia, deleted, sendToImagine, toggleBasket, basketMembers, togglePlayQueue, playQueueMembers, queueImageForMontage, captionVideoHeight, slideSeconds, setSlideSeconds, lightboxChrome, collections, filters, activeCollectionId, removeFromCollection, deleteMembershipNote, grokAccounts, accountLabel, setAccount, UNKNOWN_ACCOUNT } from '$lib/state.js';
   import { mediaRelated } from '$lib/api.js';
   import { copyText } from '$lib/clipboard.js';
   import { trapFocus } from '$lib/focusTrap.js';
@@ -619,6 +619,17 @@
             {#each flags as key (key)}
               <span class="rounded-full border border-line px-3 py-1 text-xs font-semibold text-muted"
                 title={`Grok asset flag: ${key}`}>{FLAG_LABELS[key]}</span>
+            {/each}
+          </div>
+        {/if}
+        {#if $grokAccounts.length > 1 || !(item.accounts?.length)}
+          <!-- Which Grok account(s) listed this item; click one to scope the library to it. -->
+          <div class="mb-3 flex flex-wrap items-center gap-2">
+            <span class="text-xs font-bold uppercase tracking-wide text-muted">Account</span>
+            {#each (item.accounts?.length ? item.accounts : [UNKNOWN_ACCOUNT]) as acct (acct)}
+              <button type="button" class="rounded-full border border-line px-3 py-1 text-xs font-semibold transition hover:border-[var(--accent)] {acct === UNKNOWN_ACCOUNT ? 'text-muted' : ''}"
+                title={acct === UNKNOWN_ACCOUNT ? 'Not attributed yet — the next Sync or Re-attribute accounts fills this in' : `Show only ${accountLabel(acct, $grokAccounts)}'s items`}
+                onclick={() => { setAccount(acct); close(); }}>{accountLabel(acct, $grokAccounts)}</button>
             {/each}
           </div>
         {/if}

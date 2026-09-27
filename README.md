@@ -93,6 +93,18 @@ multiple named accounts supported, each toggleable) — no shell access needed. 
 server is configured (see *Subtitles*), a **Generate Subtitles** button also appears.
 Long jobs stream their progress into an on-page **Log** overlay.
 
+**Account switch.** Every item records which Grok account(s) listed it (`accounts` in
+`metadata.json`; an item listed by two accounts belongs to both). With more than one
+account — or anything not attributed yet — an account menu appears in the top bar that
+scopes the whole library (views, search, facets, canvases) to one account, *All
+accounts*, *Unknown account* (items no sync has attributed yet), or *Local* (imports,
+montages, API generations). Each Sync attributes everything an account lists, including
+items it skips because they're already downloaded. To attribute an existing library
+without downloading anything, use **Re-attribute accounts…** in that menu, or the CLI:
+`python grokive.py attribute` (the default account, `grok_auth.txt`) and
+`python grokive.py attribute --curl grok_accounts/<id>.txt --account <id>` per extra
+account, then `python grokive.py index`. Items Grok no longer lists stay *Unknown*.
+
 All state (`grok_auth.txt` + `grok_accounts.json`/`grok_accounts/` (Grok account
 sessions), `metadata.json`, `index.db` (the derived SQLite
 read-model), `library.json` (favorites/archive), `deleted_ids.json` (delete blocklist),
