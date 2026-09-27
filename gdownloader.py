@@ -34,6 +34,13 @@ DELETED_IDS: set[str] = set()
 # Count of items re-downloaded in place this run because Grok began serving an HD
 # (upscaled) variant for an id we already had — surfaced in the run summary.
 REFRESHED: int = 0
+# Which Grok account (grok_accounts.json id) this run lists. Every item the account lists —
+# new downloads AND already-held items it would otherwise skip — gets the id added to its
+# record's `accounts` list, so an item can belong to several accounts. Records with no
+# `accounts` key predate attribution ("unknown account" until a sync or `--refresh-metadata`
+# listing of each account fills it in). Set in main() from --account (default: derived
+# from the --curl path; the legacy grok_auth.txt slot is the "default" account).
+ACCOUNT_ID: str | None = None
 # Sync downloads media in parallel per conversation. On a frozen set of 15 videos (109MB)
 # the download phase took 37.5s serially and 13-15s with 3-4 workers; a single 6-worker
 # sample was slower than 3, so the gain flattens fast. Every worker opens a fresh
@@ -1162,6 +1169,29 @@ class _ItemJob:
     path: Path
 
 
+def note_account(raw: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> bool:
+    """Attribute an already-held item to this run's account (see ACCOUNT_ID). Main thread
+    only. Returns True if the record changed. New records get theirs in _apply_item."""
+    if not ACCOUNT_ID:
+        return False
+    record = by_id.get(str(raw.get("id")))
+    if record is None:
+        return False
+    accounts = record.get("accounts") if isinstance(record.get("accounts"), list) else []
+    if ACCOUNT_ID in accounts:
+        return False
+    record["accounts"] = [*accounts, ACCOUNT_ID]
+    return True
+
+
+def account_from_curl_path(curl_path: Path) -> str:
+    """grok_accounts/<id>.txt -> <id>; anything else (grok_auth.txt, the legacy
+    curl_samples.txt, a hand-picked file) is the app's "default" account slot."""
+    if curl_path.parent.name == "grok_accounts" and curl_path.suffix == ".txt":
+        return curl_path.stem
+    return "default"
+
+
 def _plan_item(raw: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> _ItemJob | None:
     """Decide what an item needs without doing any of it. Reads by_id and the disk, writes
     nothing — so a whole batch can be planned before its downloads start."""
@@ -1221,8 +1251,10 @@ def _apply_item(
         return False
     path = job.path if job.kind == "index" else local
     # Store local_path relative to GALLERY_ROOT (e.g. media/images/<id>.jpg).
-    record = normalize_record(job.raw, path.relative_to(GALLERY_ROOT))
-    by_id[job.item_id] = record.__dict__
+    record = normalize_record(job.raw, path.relative_to(GALLERY_ROOT)).__dict__
+    if ACCOUNT_ID:
+        record["accounts"] = [ACCOUNT_ID]
+    by_id[job.item_id] = record
     save_metadata(args.metadata, list(by_id.values()))
     if not args.quiet:
         verb = "indexed existing" if job.kind == "index" else "saved"
@@ -1292,6 +1324,7 @@ def process_item(
     args: argparse.Namespace,
 ) -> bool:
     """Download one media item and record it. Returns True if a new file was saved."""
+    note_account(raw, by_id)  # also for items we already hold (they're skipped below)
     job = _plan_item(raw, by_id)
     if job is None:
         return False
@@ -1326,6 +1359,8 @@ def process_items(
     the next sync's _plan_item indexes it instead of fetching it again."""
     if DOWNLOAD_WORKERS <= 1:
         return sum(process_item(client, media_spec, raw, by_id, args) for raw in items)
+    for raw in items:
+        note_account(raw, by_id)  # already-held items are never planned, but they're listed
     jobs: list[_ItemJob] = []
     planned: set[str] = set()
     for raw in items:
@@ -1370,7 +1405,7 @@ def patch_existing_record(raw: dict[str, Any], by_id: dict[str, dict[str, Any]])
     record = by_id.get(str(raw["id"]))
     if record is None:
         return False
-    changed = False
+    changed = note_account(raw, by_id)
     created_at = first_value(raw, DATE_KEYS)
     if created_at and not record.get("created_at"):
         record["created_at"] = str(created_at)
@@ -1447,7 +1482,17 @@ def main() -> None:
         action="store_true",
         help="Re-fetch the list(s) and backfill metadata (e.g. created_at) on existing records without downloading media.",
     )
+    parser.add_argument(
+        "--account",
+        default=None,
+        help=(
+            "Grok account id to attribute listed items to (added to each record's `accounts`). "
+            "Default: derived from --curl (grok_accounts/<id>.txt -> <id>, otherwise 'default')."
+        ),
+    )
     args = parser.parse_args()
+    global ACCOUNT_ID
+    ACCOUNT_ID = (args.account or "").strip() or account_from_curl_path(args.curl)
 
     curl_path = args.curl
     if not curl_path.exists():

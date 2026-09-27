@@ -75,6 +75,15 @@ CREATE TABLE IF NOT EXISTS media_tags (
 );
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON media_tags(tag);
 
+-- Which Grok account(s) listed each item (metadata.json `accounts`). An item with no
+-- rows here is unattributed ("unknown account").
+CREATE TABLE IF NOT EXISTS media_accounts (
+  media_id   TEXT,
+  account_id TEXT,
+  PRIMARY KEY (media_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_media_accounts_account ON media_accounts(account_id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS media_fts USING fts5(
   id UNINDEXED, prompt, tags, model, filename, tokenize='porter unicode61'
 );
@@ -99,6 +108,31 @@ MEDIA_COLUMNS = [
 # Durable user-tag state (see the module docstring), a sibling of metadata.json.
 USER_TAGS_FILE = "tags.json"
 TAG_SOURCES = ("auto", "user")
+# Account-filter value for items no account has claimed yet (can't collide with a real
+# id: those are "default" or token_hex, see server._ACCOUNT_ID_RE).
+UNKNOWN_ACCOUNT = "__unknown__"
+# Pseudo-account for media that never came from a Grok account sync: folder imports,
+# rendered montages and xAI-API (Grok Imagine panel) generations.
+LOCAL_ACCOUNT = "__local__"
+
+
+def item_accounts(item: dict[str, Any]) -> list[str]:
+    """A metadata record's account ids (deduped, order kept); [] = unattributed."""
+    raw = item.get("accounts")
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(a for a in (str(x).strip() for x in raw) if a))
+
+
+def _account_clause(account: str | None) -> tuple[str | None, list[Any]]:
+    """SQL restricting ``m`` to one account's items (or the unattributed ones).
+    Empty / 'all' = no restriction."""
+    account = str(account or "").strip()
+    if not account or account == "all":
+        return None, []
+    if account == UNKNOWN_ACCOUNT:
+        return "NOT EXISTS (SELECT 1 FROM media_accounts ma WHERE ma.media_id = m.id)", []
+    return "EXISTS (SELECT 1 FROM media_accounts ma WHERE ma.media_id = m.id AND ma.account_id = ?)", [account]
 
 
 def load_user_tag_items(path: str | Path) -> dict[str, list[str]]:
@@ -167,6 +201,9 @@ def _attach_tags(conn: sqlite3.Connection, d: dict[str, Any]) -> dict[str, Any]:
         "SELECT tag, source FROM media_tags WHERE media_id = ? ORDER BY tag COLLATE NOCASE", (d["id"],)
     ):
         (d["user_tags"] if source == "user" else d["tags"]).append(tag)
+    d["accounts"] = [r[0] for r in conn.execute(
+        "SELECT account_id FROM media_accounts WHERE media_id = ? ORDER BY rowid", (d["id"],)
+    )]
     return d
 
 
@@ -317,6 +354,7 @@ def build_index(
         conn.commit()
         media_rows = []
         tag_rows = []
+        account_rows = []
         fts_rows = []
         for item in items:
             mid = item["id"]
@@ -383,6 +421,11 @@ def build_index(
             ))
             for tag in tags:
                 tag_rows.append((mid, tag, "auto"))
+            accts = item_accounts(item)
+            if not accts and (item.get("api_generated") or str(mid).startswith(("import_", "montage_"))):
+                accts = [LOCAL_ACCOUNT]
+            for acct in accts:
+                account_rows.append((mid, acct))
             fts_rows.append([
                 mid, item.get("prompt") or "", " ".join(tags),
                 item.get("model") or "", rel.rsplit("/", 1)[-1],
@@ -405,7 +448,9 @@ def build_index(
         tag_rows.extend((mid, tag, "user") for mid, tl in user_tags.items() if mid in indexed for tag in tl)
         conn.execute("DELETE FROM media")
         conn.execute("DELETE FROM media_tags")
+        conn.execute("DELETE FROM media_accounts")
         conn.execute("DELETE FROM media_fts")
+        conn.executemany("INSERT OR IGNORE INTO media_accounts (media_id, account_id) VALUES (?, ?)", account_rows)
         conn.executemany(
             f"INSERT OR REPLACE INTO media ({','.join(MEDIA_COLUMNS)}) "
             f"VALUES ({','.join('?' for _ in MEDIA_COLUMNS)})",
@@ -502,6 +547,7 @@ def query_media(
     end: str | None = None,
     tag_source: str = "all",
     tag_mode: str = "any",
+    account: str | None = None,
 ) -> dict[str, Any]:
     """Paginated, filtered media query. ``favorites``/``stashed`` are id sets the
     caller supplies (from library.json); they drive Favorites/Archive and the
@@ -550,6 +596,11 @@ def query_media(
         if tag_sql:
             where.append(tag_sql)
             params.extend(tag_params)
+        # Master account switch: one account's items, the unattributed ones, or all.
+        acct_sql, acct_params = _account_clause(account)
+        if acct_sql:
+            where.append(acct_sql)
+            params.extend(acct_params)
 
         model_list = list(models)
         if model_list:
@@ -802,6 +853,7 @@ def delete_media(db_path: str | Path, ids: list[str]) -> int:
             qmarks = ",".join("?" for _ in chunk)
             deleted += conn.execute(f"DELETE FROM media WHERE id IN ({qmarks})", chunk).rowcount
             conn.execute(f"DELETE FROM media_tags WHERE media_id IN ({qmarks})", chunk)
+            conn.execute(f"DELETE FROM media_accounts WHERE media_id IN ({qmarks})", chunk)
             conn.execute(f"DELETE FROM media_fts WHERE id IN ({qmarks})", chunk)
         conn.commit()
         return deleted
@@ -827,8 +879,9 @@ def facets(
     end: str | None = None,
     tag_source: str = "all",
     tag_mode: str = "any",
+    account: str | None = None,
 ) -> dict[str, Any]:
-    """Tag / model / canvas / resolution counts for the current browsing scope.
+    """Tag / model / canvas / resolution / account counts for the current browsing scope.
 
     Cross-facet: each facet's counts reflect the OTHER active chip selections but
     exclude its own dimension — so selecting tags narrows the resolution and model
@@ -893,6 +946,9 @@ def facets(
         def tag_clause() -> tuple[str | None, list[Any]]:
             return _tag_filter_clause(tags, tag_source, tag_mode, alias="mt2")
 
+        def account_clause() -> tuple[str | None, list[Any]]:
+            return _account_clause(account)
+
         def model_clause() -> tuple[str | None, list[Any]]:
             ml = [m for m in models if m]
             if not ml:
@@ -929,7 +985,7 @@ def facets(
                     p.extend(ps)
             return ((" WHERE " + " AND ".join(w)) if w else ""), p
 
-        tags_where, tags_params = compose(model_clause(), res_clause())
+        tags_where, tags_params = compose(model_clause(), res_clause(), account_clause())
 
         def source_tag_rows(source: str) -> list[dict[str, Any]]:
             src_where = (tags_where + " AND" if tags_where else " WHERE") + " mt.source = ?"
@@ -945,7 +1001,7 @@ def facets(
         # `tags` keeps its meaning (prompt-derived); hand-assigned tags count separately.
         tag_rows = source_tag_rows("auto")
         user_tag_rows = source_tag_rows("user")
-        models_where, models_params = compose(tag_clause(), res_clause())
+        models_where, models_params = compose(tag_clause(), res_clause(), account_clause())
         model_rows = [
             {"name": r["model"] or "Unknown model", "count": r["n"]}
             for r in conn.execute(
@@ -954,7 +1010,7 @@ def facets(
                 models_params,
             )
         ]
-        canvas_where, canvas_params = compose(tag_clause(), model_clause(), res_clause())
+        canvas_where, canvas_params = compose(tag_clause(), model_clause(), res_clause(), account_clause())
         # created_at/updated_at are derived from the canvas's own media (a canvas has no
         # row of its own): oldest item = when it started, newest = when it last grew.
         # The Canvases landing sorts on them (Recent / Recently updated).
@@ -975,7 +1031,7 @@ def facets(
                 canvas_params,
             )
         ]
-        res_base_where, res_params = compose(tag_clause(), model_clause())
+        res_base_where, res_params = compose(tag_clause(), model_clause(), account_clause())
         res_where = (res_base_where + " AND" if res_base_where else " WHERE") + \
             " m.media_w IS NOT NULL AND m.media_h IS NOT NULL"
         resolution_rows = [
@@ -989,10 +1045,26 @@ def facets(
                 res_params,
             )
         ]
+        # Account counts (the master switch's menu): every other chip applies, the account
+        # itself doesn't. Unattributed items count under UNKNOWN_ACCOUNT.
+        acct_where, acct_params = compose(tag_clause(), model_clause(), res_clause())
+        account_rows = [
+            {"id": r["account_id"], "count": r["n"]}
+            for r in conn.execute(
+                f"SELECT ma.account_id, COUNT(*) n FROM media_accounts ma JOIN media m ON m.id = ma.media_id"
+                f"{joins}{acct_where} GROUP BY ma.account_id ORDER BY n DESC, ma.account_id",
+                acct_params,
+            )
+        ]
+        unk_where = (acct_where + " AND" if acct_where else " WHERE") + \
+            " NOT EXISTS (SELECT 1 FROM media_accounts ma2 WHERE ma2.media_id = m.id)"
+        unknown = conn.execute(f"SELECT COUNT(*) FROM media m{joins}{unk_where}", acct_params).fetchone()[0]
+        if unknown:
+            account_rows.append({"id": UNKNOWN_ACCOUNT, "count": unknown})
         # Total stays the scope count (ignores chips) — its prior meaning; unused by the UI.
         total = conn.execute(f"SELECT COUNT(*) FROM media m{joins}"
                              f"{(' WHERE ' + ' AND '.join(where)) if where else ''}", params).fetchone()[0]
-        return {"tags": tag_rows, "user_tags": user_tag_rows, "models": model_rows, "canvases": canvas_rows,
+        return {"tags": tag_rows, "user_tags": user_tag_rows, "accounts": account_rows, "models": model_rows, "canvases": canvas_rows,
                 "resolutions": resolution_rows, "total": total}
     finally:
         conn.close()

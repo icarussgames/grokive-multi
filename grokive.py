@@ -114,6 +114,34 @@ def warm_motion_cache() -> int:
     return 0
 
 
+def _add_account_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--account", default=None,
+                   help="Account id recorded on every listed item (default: derived from --curl; grok_auth.txt = 'default').")
+    p.add_argument("--attribute-only", action="store_true",
+                   help="Only list and record the account on items already held (gdownloader --refresh-metadata); no downloads.")
+
+
+def _account_flags(args: argparse.Namespace) -> list[str]:
+    flags = ["--account", args.account] if getattr(args, "account", None) else []
+    if getattr(args, "attribute_only", False):
+        flags.append("--refresh-metadata")
+    return flags
+
+
+def attribute_account(args: argparse.Namespace) -> int:
+    """Re-list one account (favorites, agent canvases, conversations) in
+    --refresh-metadata mode: nothing is downloaded, but every already-held item the
+    account lists gets its id added to `accounts`. Returns the first failing code."""
+    base = [sys.executable, script("gdownloader.py"), "--curl", args.curl, "--refresh-metadata", "--quiet"]
+    if args.account:
+        base += ["--account", args.account]
+    code = 0
+    for extra in (["--grok-favorites", "--max-pages", str(args.max_pages)], ["--grok-agents"], ["--grok-conversations"]):
+        rc = run([*base, *extra])
+        code = code or rc
+    return code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Grokive command helper.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -122,11 +150,13 @@ def main() -> int:
     dl.add_argument("--curl", default=default_curl())
     dl.add_argument("--max-pages", default="5000")
     dl.add_argument("--verbose", action="store_true")
+    _add_account_args(dl)
 
     agents = sub.add_parser("agents", help="Download media from Grok Agent canvases (/imagine/agent/<id>).")
     agents.add_argument("--curl", default=default_curl())
     agents.add_argument("canvas_ids", nargs="*", help="Specific canvas IDs/URLs; omit to archive all canvases.")
     agents.add_argument("--verbose", action="store_true")
+    _add_account_args(agents)
 
     conversations = sub.add_parser(
         "conversations",
@@ -139,11 +169,22 @@ def main() -> int:
         help="Specific conversation IDs or /imagine/post/<id>?conversation=<id> URLs; omit for all.",
     )
     conversations.add_argument("--verbose", action="store_true")
+    _add_account_args(conversations)
 
     post = sub.add_parser("post", help="Download specific Grok Imagine posts, including original/base and child media.")
     post.add_argument("--curl", default=default_curl())
     post.add_argument("post_ids", nargs="+", help="Post IDs or /imagine/post/<id> URLs.")
     post.add_argument("--verbose", action="store_true")
+
+    attribute = sub.add_parser(
+        "attribute",
+        help="List an account's favorites, canvases and conversations WITHOUT downloading, and record "
+             "that account on every item it lists (fills metadata.json `accounts`).",
+    )
+    attribute.add_argument("--curl", default=default_curl())
+    attribute.add_argument("--account", default=None,
+                           help="Account id to record (default: derived from --curl; grok_auth.txt = 'default').")
+    attribute.add_argument("--max-pages", default="5000")
 
     sub.add_parser("index", help="Generate missing thumbnails and (re)build the SQLite index (index.db) the web UI queries.")
 
@@ -166,6 +207,7 @@ def main() -> int:
             "--curl", args.curl,
             "--grok-favorites",
             "--max-pages", str(args.max_pages),
+            *_account_flags(args),
         ]
         if not args.verbose:
             cmd.append("--quiet")
@@ -174,6 +216,7 @@ def main() -> int:
         cmd = [
             sys.executable, script("gdownloader.py"),
             "--curl", args.curl,
+            *_account_flags(args),
             "--grok-agents", *args.canvas_ids,
         ]
         if not args.verbose:
@@ -183,11 +226,14 @@ def main() -> int:
         cmd = [
             sys.executable, script("gdownloader.py"),
             "--curl", args.curl,
+            *_account_flags(args),
             "--grok-conversations", *args.conversation_ids,
         ]
         if not args.verbose:
             cmd.append("--quiet")
         return run(cmd)
+    if args.command == "attribute":
+        return attribute_account(args)
     if args.command == "post":
         cmd = [
             sys.executable, script("gdownloader.py"),

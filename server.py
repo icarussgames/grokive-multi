@@ -489,13 +489,16 @@ def _sync_worker() -> None:
                 failures += 1
                 continue
             curl_rel = _account_curl_rel(acct["id"])
-            acct_rc = _run_step(f"download{tag}", [py, cli, "download", "--curl", curl_rel])
+            # --account: every item this account lists (new or already held) is recorded
+            # under its id in metadata.json `accounts` — the master account switch's data.
+            acct_args = ["--curl", curl_rel, "--account", acct["id"]]
+            acct_rc = _run_step(f"download{tag}", [py, cli, "download", *acct_args])
             if acct_rc == 0:
-                acct_rc = _run_step(f"agents{tag}", [py, cli, "agents", "--curl", curl_rel])
+                acct_rc = _run_step(f"agents{tag}", [py, cli, "agents", *acct_args])
             if acct_rc == 0:
                 # Imagine v2 media never reaches the favorites list "download" reads, and
                 # its chain isn't on the post — it only exists in the conversation.
-                acct_rc = _run_step(f"conversations{tag}", [py, cli, "conversations", "--curl", curl_rel])
+                acct_rc = _run_step(f"conversations{tag}", [py, cli, "conversations", *acct_args])
             if acct_rc != 0:
                 failures += 1
                 rc = acct_rc
@@ -530,6 +533,58 @@ def _sync_worker() -> None:
         _sync["returncode"] = rc
         _sync["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         _sync["running"] = False
+
+
+def _attribute_worker(ids: list[str] | None) -> None:
+    """Re-attribute accounts: list each account's favorites / canvases / conversations
+    WITHOUT downloading (`grokive.py attribute`) so every item it holds gets that account
+    in metadata.json `accounts`, then rebuild the index. Shares the sync job slot + log."""
+    py = sys.executable
+    cli = str(ROOT / "grokive.py")
+    rc = 0
+    failures = 0
+    try:
+        accounts = [a for a in _load_accounts() if _account_configured(a["id"])
+                    and (ids is None or a["id"] in ids)]
+        if not accounts:
+            _log("no Grok accounts with a saved session to attribute")
+        multi = len(accounts) > 1
+        for acct in accounts:
+            tag = f" [{acct['name'].replace(':', ' ')}]" if multi else ""
+            acct_rc = _run_step(f"attribute{tag}", [py, cli, "attribute", "--curl",
+                                                    _account_curl_rel(acct["id"]), "--account", acct["id"]])
+            if acct_rc != 0:
+                failures += 1
+                rc = acct_rc
+        idx_rc = _run_step("index", [py, cli, "index"])
+        rc = rc or idx_rc
+        _sync["media_ready_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _sync["step"] = "error" if (failures or idx_rc) else "done"
+    except Exception as exc:  # pragma: no cover - defensive
+        rc = 1
+        _sync["step"] = "error"
+        _log(f"attribute crashed: {exc}")
+    finally:
+        _sync["returncode"] = rc
+        _sync["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _sync["running"] = False
+
+
+def start_attribute(ids: list[str] | None = None) -> bool:
+    with _sync_lock:
+        if _sync["running"]:
+            return False
+        _sync["running"] = True
+        _sync["job"] = "attribute"
+        _sync["step"] = "attribute"
+        _sync["returncode"] = None
+        _sync["auth_hint"] = False
+        _sync["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _sync["finished_at"] = None
+        _sync["media_ready_at"] = None
+        _sync["log"].clear()
+    threading.Thread(target=_attribute_worker, args=(ids,), daemon=True).start()
+    return True
 
 
 def start_sync() -> bool:
@@ -1509,6 +1564,18 @@ def _account_summary(acct: dict) -> dict:
 @app.get("/api/accounts")
 def api_accounts_get() -> Response:
     return jsonify(accounts=[_account_summary(a) for a in _load_accounts()])
+
+
+@app.post("/api/accounts/attribute")
+def api_accounts_attribute() -> Response:
+    """Start a re-attribution job: re-list accounts on Grok (no downloads) and record
+    which account each held item belongs to. Optional ``{ids: [...]}`` limits it to
+    those accounts; default is every account with a saved session."""
+    raw = (request.get_json(silent=True) or {}).get("ids")
+    ids = [str(i) for i in raw][:MAX_ACCOUNTS] if isinstance(raw, list) and raw else None
+    if start_attribute(ids):
+        return jsonify(ok=True)
+    return jsonify(ok=False, error="Another job is already running"), 409
 
 
 @app.post("/api/accounts")
@@ -5424,6 +5491,11 @@ def _tag_mode_arg() -> str:
     return "all" if str(request.args.get("tag_mode") or "").strip().lower() == "all" else "any"
 
 
+def _account_arg() -> str:
+    """?account= <account id> | __unknown__ (unattributed items) | all / empty (no filter)."""
+    return str(request.args.get("account") or "").strip()[:64]
+
+
 def _int_arg(name: str, default: int) -> int:
     try:
         return int(request.args.get(name, default))
@@ -5511,6 +5583,7 @@ def api_media() -> Response:
         end=end,
         tag_source=_tag_source_arg(),
         tag_mode=_tag_mode_arg(),
+        account=_account_arg(),
     )
     return jsonify(result)
 
@@ -5550,6 +5623,7 @@ def api_facets() -> Response:
         end=end,
         tag_source=_tag_source_arg(),
         tag_mode=_tag_mode_arg(),
+        account=_account_arg(),
     ))
 
 
