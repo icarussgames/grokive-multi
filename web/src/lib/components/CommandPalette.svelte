@@ -119,10 +119,10 @@
     r.run();
   }
   function onWindowKey(e) {
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') {
-      e.preventDefault();
-      open ? close() : show();
-    } else if (open && e.key === 'Escape') {
+    // Don't claim Ctrl/Cmd combos. Ctrl+K used to open this palette and called
+    // preventDefault, which also swallowed browser shortcuts such as Ctrl+Shift+R.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (open && e.key === 'Escape') {
       e.preventDefault();
       close();
     }
