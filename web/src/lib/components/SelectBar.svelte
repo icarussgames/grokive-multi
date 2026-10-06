@@ -13,7 +13,7 @@
 
   // montageIds: selected sources eligible for a montage — videos AND still images (queuing
   // an image enters picture-video mode). videoIds stays video-only for Play/Playlist/Export.
-  let { videoIds = [], imageIds = [], montageIds = [], selectableIds = [], collection = null, onplay = () => {}, onreorderexport = () => {}, oncollections = () => {}, onnested = () => {}, onremovefromcollection = () => {}, onmovie = () => {}, onbasket = () => {}, onplayqueue = () => {}, ontags = () => {} } = $props();
+  let { videoIds = [], imageIds = [], montageIds = [], selectableIds = [], collection = null, onplay = () => {}, onreorderexport = () => {}, oncollections = () => {}, onarchiveto = () => {}, onnested = () => {}, onremovefromcollection = () => {}, onmovie = () => {}, onbasket = () => {}, onplayqueue = () => {}, ontags = () => {} } = $props();
   let name = $state('');
   let busy = $state(false);
   let confirmingDelete = $state(false);
@@ -168,6 +168,12 @@
       <button class="select-btn" onclick={stashAll}
               title={view === 'archive' ? 'Restore from Archive' : 'Archive'} aria-label={view === 'archive' ? 'Restore from Archive' : 'Archive'}>
         <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/></svg>
+      </button>
+      <!-- Gmail-style: file into a grokive collection AND soft-archive (hide from Recent). -->
+      <button class="select-btn" onclick={() => onarchiveto()} disabled={!n}
+              title="Archive to collection… — add to a collection and hide from Recent" aria-label="Archive to collection…">
+        <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><path d="M12 10v6"/><path d="M9 13h6"/><path d="m16 17 2 2 4-4"/></svg>
+        <span class="btn-word">Archive to…</span>
       </button>
     </div>
 

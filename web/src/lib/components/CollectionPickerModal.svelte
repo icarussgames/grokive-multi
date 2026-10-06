@@ -9,7 +9,11 @@
   } from '$lib/state.js';
   import { toast } from '$lib/toast.js';
 
-  let { ids = [], currentCollection = null, onclose = () => {} } = $props();
+  // mode 'archive' = Gmail-style "Archive to collection…": always soft-archives after
+  // filing (the Archive-after checkbox is forced on and hidden). 'add' keeps the existing
+  // Add/Move picker (Archive-after defaults on when opened outside a collection).
+  let { ids = [], currentCollection = null, mode = 'add', onclose = () => {} } = $props();
+  const archiveMode = $derived(mode === 'archive');
   let q = $state('');
   let name = $state('');
   // Sentinel for the "New group…" dropdown row. Real group names are user-typed trimmed
@@ -119,10 +123,10 @@
   // the library, the last group committed by Create is re-selected. Either way a remembered
   // name that no longer matches an existing group falls back rather than showing a dead option.
   $effect(() => {
-    const sourceId = currentCollection?.id || '';
+    const sourceId = `${mode}:${currentCollection?.id || ''}`;
     if (initializedFor === sourceId) return;
     initializedFor = sourceId;
-    archiveAfter = !currentCollection;
+    archiveAfter = archiveMode || !currentCollection;
     removeAfter = !!currentCollection;
     if (currentCollection) {
       const seed = canonicalGroup(currentCollection.group || currentCollection.name || '');
@@ -187,10 +191,13 @@
   function finish(label, didMove) {
     const selectedNow = [...selected];
     const count = selectedNow.length;
-    if (archiveAfter) setStashed(selectedNow, true);
+    const doArchive = archiveMode || archiveAfter;
+    if (doArchive) setStashed(selectedNow, true);
     clearSelection();
     setSelectMode(false);
-    toast(`${didMove ? 'Moved' : 'Added'} ${count} item${count === 1 ? '' : 's'} to ${label}`, { type: 'success' });
+    const verb = doArchive ? 'Archived' : (didMove ? 'Moved' : 'Added');
+    const tail = doArchive ? ' (hidden from Recent — see Archive or the collection)' : '';
+    toast(`${verb} ${count} item${count === 1 ? '' : 's'} to ${label}${tail}`, { type: 'success' });
     setTimeout(() => loadCollections(), 250);
     onclose();
   }
@@ -225,13 +232,13 @@
   }
 </script>
 
-<Modal {onclose} ariaLabel={currentCollection ? 'Move or add to collection' : 'Add to collection'} z="z-[65]" panelClass="panel flex max-h-[88dvh] w-full max-w-lg flex-col overflow-hidden rounded-card">
+<Modal {onclose} ariaLabel={archiveMode ? 'Archive to collection' : (currentCollection ? 'Move or add to collection' : 'Add to collection')} z="z-[65]" panelClass="panel flex max-h-[88dvh] w-full max-w-lg flex-col overflow-hidden rounded-card">
     <div class="border-b border-line p-4">
       <div class="mb-1 flex items-center justify-between gap-3">
-        <h2 class="text-lg font-extrabold">{currentCollection ? 'Move/Add to Collection' : 'Add to Collection'}</h2>
+        <h2 class="text-lg font-extrabold">{archiveMode ? 'Archive to collection…' : (currentCollection ? 'Move/Add to Collection' : 'Add to Collection')}</h2>
         <button type="button" class="grid h-9 w-9 place-items-center rounded-lg border border-line" aria-label="Close" onclick={onclose}>✕</button>
       </div>
-      <p class="text-sm text-muted">{selected.length} selected{sourceName ? ` from "${sourceName}"` : ''}</p>
+      <p class="text-sm text-muted">{selected.length} selected{sourceName ? ` from "${sourceName}"` : ''}{#if archiveMode} — will be archived (hidden from Recent){/if}</p>
     </div>
 
     <div class="flex flex-col gap-4 overflow-auto p-4">
@@ -289,7 +296,7 @@
               {/if}
             </select>
           {/if}
-          <Button class="text-sm" disabled={!name.trim() || !selected.length} onclick={create}>Create</Button>
+          <Button class="text-sm" disabled={!name.trim() || !selected.length} onclick={create}>{archiveMode ? "Create & archive" : "Create"}</Button>
         </div>
         {#if groupChoice === NEST_PICK}
           <!-- Filtered nest-target list, full width under the create row. Same row anatomy as
@@ -326,10 +333,14 @@
             <span>Remove from current collection after adding</span>
           </label>
         {/if}
-        <label class="flex items-center gap-2 rounded-lg border border-line bg-[var(--surface-2)] px-3 py-2 text-sm">
-          <input type="checkbox" bind:checked={archiveAfter} />
-          <span>Archive after adding</span>
-        </label>
+        {#if archiveMode}
+          <p class="rounded-lg border border-line bg-[var(--surface-2)] px-3 py-2 text-sm text-muted">Items are filed into the collection and archived (same as Archive — reversible from the Archive tab).</p>
+        {:else}
+          <label class="flex items-center gap-2 rounded-lg border border-line bg-[var(--surface-2)] px-3 py-2 text-sm">
+            <input type="checkbox" bind:checked={archiveAfter} />
+            <span>Archive after adding</span>
+          </label>
+        {/if}
       </div>
 
       <div>
@@ -378,7 +389,8 @@
             onclick={() => (pickedIds = new Set())}>Clear</button>
         {/if}
         <Button class="ml-auto text-sm" disabled={!picked.length || !selected.length} onclick={addPicked}>
-          {moveMode ? 'Move' : 'Add'} to {picked.length || ''} collection{picked.length === 1 ? '' : 's'}
+          {#if archiveMode}Archive to {picked.length || ''} collection{picked.length === 1 ? '' : 's'}
+          {:else}{moveMode ? 'Move' : 'Add'} to {picked.length || ''} collection{picked.length === 1 ? '' : 's'}{/if}
         </Button>
       </div>
     {/if}

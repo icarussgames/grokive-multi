@@ -84,6 +84,10 @@
   let canvasQuery = $state('');
   let canvasSort = $state('updated'); // updated (newest item) | recent (newest canvas) | name | size
   let showCollectionPicker = $state(false);
+  // 'add' | 'archive' — archive mode is the Gmail-style "Archive to collection…" flow.
+  let collectionPickerMode = $state('add');
+  // Ids handed to the picker (selection, or a single card from the hover action).
+  let collectionPickerIds = $state([]);
   let showNestedModal = $state(false); // "Add to Nested Collection" from the SelectBar
   // Sub-collection shelf actions. Children never render on the Collections landing, so
   // the shelf tiles must carry the lock and delete affordances the landing cards have.
@@ -181,6 +185,14 @@
   // Montage. videoSelection itself keeps montages — still valid to play/export/playlist.
   const montageSelectionIds = $derived($selection.filter((id) => isMontageQueueable(byId.get(id))));
   const selectionHasImage = $derived(montageSelectionIds.some((id) => byId.get(id)?.media_type === 'image'));
+
+  function openArchiveToCollection(itOrIds) {
+    const ids = Array.isArray(itOrIds) ? itOrIds.map((x) => x?.id || x) : [itOrIds?.id || itOrIds];
+    collectionPickerMode = 'archive';
+    collectionPickerIds = ids.map(String).filter(Boolean);
+    if (!collectionPickerIds.length) return;
+    showCollectionPicker = true;
+  }
 
   async function load(reset) {
     // A reset (view/filter change) must SUPERSEDE an in-flight load, not be dropped —
@@ -1029,6 +1041,7 @@
           groupByWeek={weekGrouping} {sortNewest}
           collection={activeCollection} onremovefromcollection={(id) => removeIdsFromActiveCollection([id])}
           onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)}
+          onarchiveto={openArchiveToCollection}
           onplay={(videos, title) => playResolved(videos, title)}
           onexport={(videos, label) => openExportOrder(videos, label)}
           onmontage={(ids) => { movieVideoIds = ids; showMovie = true; }} />
@@ -1041,7 +1054,8 @@
           selectMode={$selectMode}
           groupByWeek={weekGrouping} {sortNewest}
           collection={activeCollection} onremovefromcollection={(id) => removeIdsFromActiveCollection([id])}
-          onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)} />
+          onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)}
+          onarchiveto={openArchiveToCollection} />
       {/if}
       <div bind:this={sentinel} class="h-10"></div>
       {#if loading}<p class="py-6 text-center text-sm text-muted">Loading…</p>{/if}
@@ -1096,7 +1110,8 @@
         <JustifiedGrid items={displayItems} {targetHeight} {gap}
           selectMode={$selectMode}
           groupByWeek={weekGrouping} {sortNewest}
-          onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)} />
+          onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)}
+          onarchiveto={openArchiveToCollection} />
       {/if}
 
       <div bind:this={sentinel} class="h-10"></div>
@@ -1225,7 +1240,8 @@
         <JustifiedGrid items={displayItems} {targetHeight} {gap}
           selectMode={$selectMode}
           groupByWeek={weekGrouping} {sortNewest}
-          onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)} />
+          onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)}
+          onarchiveto={openArchiveToCollection} />
       {/if}
 
       <div bind:this={sentinel} class="h-10"></div>
@@ -1238,7 +1254,8 @@
   <SelectBar videoIds={videoSelection} imageIds={imageSelection} montageIds={montageSelectionIds} {selectableIds} collection={activeCollection}
     onplay={playSelection}
     onreorderexport={reorderSelectionExport}
-    oncollections={() => (showCollectionPicker = true)}
+    oncollections={() => { collectionPickerMode = 'add'; collectionPickerIds = [...$selection]; showCollectionPicker = true; }}
+    onarchiveto={() => { collectionPickerMode = 'archive'; collectionPickerIds = [...$selection]; showCollectionPicker = true; }}
     ontags={() => (showTagPicker = true)}
     onnested={() => (showNestedModal = true)}
     onmovie={() => { movieVideoIds = montageSelectionIds; if (selectionHasImage) montageMode.set('picture-video'); showMovie = true; }}
@@ -1273,7 +1290,8 @@
 {/if}
 
 {#if showCollectionPicker}
-  <CollectionPickerModal ids={$selection} currentCollection={activeCollection} onclose={() => (showCollectionPicker = false)} />
+  <CollectionPickerModal ids={collectionPickerIds} mode={collectionPickerMode} currentCollection={activeCollection}
+    onclose={() => { showCollectionPicker = false; collectionPickerIds = []; }} />
 {/if}
 
 {#if showTagPicker}

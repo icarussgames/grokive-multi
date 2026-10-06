@@ -17,6 +17,7 @@
     collection = null,
     onopen = () => {},
     ontoggleselect = () => {},
+    onarchiveto = null, // (item) => void — hover "Archive to collection…"; null hides the button
     onremovefromcollection = () => {},
     // Order a Shift-range walks. Defaults to this grid's items (the full LOADED list, so
     // virtualized-away cards in between count too); a grouped layout passes its whole
@@ -463,6 +464,13 @@
                 onclick={(e) => { e.stopPropagation(); setStashed([it.id], !isStashed); }}>
                 <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/></svg>
               </button>
+              {#if onarchiveto}
+                <button type="button" aria-label="Archive to collection…" title="Archive to collection… — add to a collection and hide from Recent"
+                  class="card-action-btn"
+                  onclick={(e) => { e.stopPropagation(); onarchiveto(it); }}>
+                  <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><path d="M12 10v6"/><path d="M9 13h6"/></svg>
+                </button>
+              {/if}
               <button type="button" aria-label="Delete" title="Delete"
                 class="card-action-btn hover:bg-[var(--danger)]"
                 onclick={(e) => { e.stopPropagation(); confirming = it; }}>

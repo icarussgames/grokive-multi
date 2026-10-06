@@ -25,6 +25,7 @@
     onmontage = () => {},
     onplay = () => {},
     onremovefromcollection = () => {},
+    onarchiveto = null,
     groupByWeek = false,
     sortNewest = true
   } = $props();
@@ -219,7 +220,7 @@
         {#if mode === 'editorial'}
           <EditorialList items={fam.items} {onopen} {collection} {onremovefromcollection} />
         {:else}
-          <JustifiedGrid items={fam.items} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
+          <JustifiedGrid items={fam.items} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {onopen} {ontoggleselect} {onarchiveto} {collection} {onremovefromcollection} />
         {/if}
       </div>
     </section>
@@ -240,7 +241,7 @@
       {#if mode === 'editorial'}
         <EditorialList items={grouped.ungrouped} {onopen} {collection} {onremovefromcollection} />
       {:else}
-        <JustifiedGrid items={grouped.ungrouped} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
+        <JustifiedGrid items={grouped.ungrouped} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {onopen} {ontoggleselect} {onarchiveto} {collection} {onremovefromcollection} />
       {/if}
     </section>
   {/if}
