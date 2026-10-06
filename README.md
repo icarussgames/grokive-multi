@@ -1,12 +1,94 @@
-<a href="https://buymeacoffee.com/starrlord"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="40" align="right"></a>
-
-# Grokive
+# grokive-multi
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Download your Grok Imagine favorites and Agent canvases, then browse them in a modern, responsive web app — chain clips into a playlist and export them as one seamless video, auto-generate subtitles for every clip, and burn them straight into the merged file.
+**grokive-multi** is a fork of [**starrlord/grokive**](https://github.com/starrlord/grokive) —
+the free, self-hosted Grok Imagine archiver and web app by [starrlord](https://github.com/starrlord)
+(all the core archiving, browsing, playlists, montage, Prompt Studio and subtitle features
+below are upstream's work; if you like it, [buy starrlord a coffee](https://buymeacoffee.com/starrlord)).
+This fork makes it comfortable to run **several Grok accounts in one library**: every item
+knows which account(s) it came from, you can switch the whole library between accounts,
+check and sync each account on its own, tag media yourself, and sync large accounts much
+faster with incremental conversation sync (plus a deep sync when you need everything rechecked).
 
-Grokive is a free, self-hosted archiver that keeps your Grok Imagine library entirely on hardware you control. You sign in once by pasting a cURL request copied from your browser session; from there the tool pulls your saved media down to local disk. Browsing happens in a **SvelteKit single-page web app** (run via Docker or `python server.py`) backed by a SQLite read-model, with full-text prompt search, favorites, archive, collections, playlists, subtitle generation, themes, and an installable PWA. With an xAI key it can also **generate new images and video** with the **Grok Imagine API** straight into your library. A small **CLI** handles the downloading and index builds.
+```bash
+git clone https://github.com/icarussgames/grokive-multi.git
+cd grokive-multi
+```
+
+## What's different in this fork
+
+### Multiple Grok accounts in one library
+
+- **Per-account sessions.** Add any number of named accounts in **Config → Grok accounts**;
+  each keeps its own pasted cURL session — the first in `grok_auth.txt`, the others in
+  `grok_accounts/<id>.txt` (registry in `grok_accounts.json`). Toggle accounts active/paused;
+  **Sync** fetches every active account in turn.
+- **Check auth / Check all.** A **Check** button per account sends one lightweight
+  authenticated request to Grok (nothing is downloaded) and shows the verdict inline with
+  the time: *Session OK*, *Expired / 401 — paste a fresh cURL*, a Cloudflare / `cf_clearance`
+  403, rate limiting, or a network error. **Check all** tests every account at once. Cookie
+  values are never logged or returned.
+- **Sync this account.** A sync button per account runs the normal Sync pipeline for just
+  that account (even a paused one), in the same job slot and log as Sync — the status pill
+  says *Syncing &lt;name&gt;*. API: `POST /api/accounts/<id>/sync`, or `POST /api/sync` with
+  `{"account": "<id>"}` (409 while another job runs).
+- **Account attribution.** Every item records which account(s) listed it (`accounts` in
+  `metadata.json`; an item listed by two accounts belongs to both). Each sync attributes
+  everything an account lists, including items it skips because they're already
+  downloaded. To attribute an existing library without downloading anything, use
+  **Re-attribute accounts…** in the account menu, or the CLI:
+  `python grokive.py attribute` (default account), then
+  `python grokive.py attribute --curl grok_accounts/<id>.txt --account <id>` per extra
+  account, then `python grokive.py index`. Items no sync has attributed yet show as
+  *Unknown account*; imports, montages and API generations show as *Local*.
+- **Account switcher.** With more than one account (or anything unattributed) an account
+  menu appears in the top bar: scope the whole library — views, search, facets, canvases —
+  to one account, *All accounts*, *Unknown account* or *Local*, with per-account counts.
+  The lightbox info panel gains an **Account** row; click an account there to switch to it.
+
+### Tags
+
+- **User tags.** Label media with your own tags next to the automatic prompt tags: the
+  lightbox **tag editor** (autocomplete + suggested chips from the prompt), a bulk **Tag…**
+  picker in select mode, **My tags** filters (match any / all), and a **Manage tags** panel to
+  rename, merge, recolor or delete. Stored in `tags.json` in the data directory (included in
+  backups). See *My tags* under [Web App](#web-app-modern-ui).
+- **Account labels.** Each item's account(s) appear as labels in the lightbox and drive the
+  account filter, alongside your own tags.
+
+### Fast sync vs. deep sync
+
+- **Incremental conversations (default).** Media made in the current Imagine UI is archived
+  conversation by conversation. Sync now only reads conversations that are new or whose
+  Grok `modifyTime` changed since they were last archived cleanly, and stops listing once a
+  whole page is unchanged (it keeps listing if an earlier failure still awaits a retry, or
+  if Grok's list isn't in last-modified order). The times are kept per account in
+  `conversation_state.json`. A conversation with a failed download isn't marked done, so it's
+  retried next sync. The log shows e.g. `conversations: 12 changed/new, 4,310 unchanged skipped`.
+- **Deep sync** re-reads every conversation (the old behaviour) and refreshes the saved
+  times: the **Deep** button next to each account in Config, **Shift+click Sync** for all
+  accounts, `POST /api/sync` with `{"deep": true}` (optionally with `"account"`), or
+  `python grokive.py conversations --deep`.
+- **Caveats.** The first sync of each account reads everything once (no saved state yet).
+  Changes that don't bump a conversation's `modifyTime` (e.g. a 1080p render that appears
+  later) are only picked up by a deep sync — run one now and then. Favorites and Agent
+  canvases are still listed in full on every sync.
+
+### Smaller changes
+
+- **Browser shortcuts work again.** The app no longer captures Ctrl/Cmd key combos, so
+  browser shortcuts such as **Ctrl+Shift+R** go through (this also retired the Ctrl/Cmd+K
+  shortcut for the command palette).
+- **Stats has its own top-bar button**, and **Settings (⚙) opens Config directly**; when a
+  Whisper server is configured, **CC** (Generate subtitles) is its own button too.
+- **Docker:** the prebuilt image referenced below (`ghcr.io/starrlord/grokive`) is
+  upstream's and doesn't include these changes — build from this checkout with
+  `docker compose -f docker-compose.build.yml up -d --build`, or run from source.
+
+---
+
+*Everything below is upstream's documentation (lightly updated for this fork).*
 
 ## Screenshots
 
@@ -24,6 +106,7 @@ Grokive is a free, self-hosted archiver that keeps your Grok Imagine library ent
 
 ## Contents
 
+- [What's different in this fork](#whats-different-in-this-fork)
 - [Features](#features)
 - [Run as a Docker container](#run-as-a-docker-container-unraid--self-hosted)
   - [docker compose](#docker-compose)
@@ -67,7 +150,7 @@ Grokive is a free, self-hosted archiver that keeps your Grok Imagine library ent
 - Show parent media when parent metadata is available.
 - Build **collections** for mixed images/videos, organize related collections into named **collection groups** (on desktop, just **drag one collection card onto another**), or make video **playlists** for back-to-back playback with fullscreen auto-advance and drag-to-reorder. Collections and playlists live together under a **Library** tab, whose landing opens with a **Recently active** row of featured cards and covers that **come alive on hover**.
 - **Import a folder** of your own videos/images straight into a new or existing collection — files are copied in with thumbnails and indexed alongside your synced media.
-- **Command palette:** press **Ctrl/Cmd+K** anywhere to fuzzy-jump to any collection, playlist, or view — or type `play`, `shuffle`, or `queue` plus a collection name to act on it directly.
+- **Command palette:** fuzzy-jump to any collection, playlist, or view — or type `play`, `shuffle`, or `queue` plus a collection name to act on it directly. (In this fork its Ctrl/Cmd+K shortcut is retired so browser shortcuts pass through.)
 - **Play Queue:** a cross-library, reload-surviving video queue — add clips from a collection card, a grid card, or select mode, then play them back-to-back (in order or shuffled) or save the queue as a playlist.
 - **Export a playlist** (or an ad-hoc selection) as one merged MP4 — a reorder step lets you arrange (or shuffle) the clips first, an optional **cinematic intro** opens the video with a trailer-style title card built from your own clips, and the merge is a lossless stream-copy when clips match, otherwise a high-fidelity re-encode (audio always kept).
 - **Song Beat Montage:** pick videos + a song and the server cuts a beat-synced montage — motion peaks landed on the beat and cut density that follows the song's energy. Pick a **style** — Classic (punchy hard cuts), Cinematic (smarter analysis, beat-timed transitions, on-beat zoom punch), Moody (long held shots with a slow push-in, punctuated by beat bursts), or Music Video (maximum-energy sub-beat cutting, flashes, and a neon grade) — with optional GPU-accelerated rendering (NVENC when available, else CPU) and one-click **Add to Collection**. Gather clips into a cross-library **Montage basket** to build one montage from videos spread across collections and canvases, let **Auto-pick** choose clips for a song from your whole library, or switch to **Motion Match Cut** mode to splice clips where their motion flows across the cut (song optional).
@@ -93,43 +176,11 @@ multiple named accounts supported, each toggleable) — no shell access needed. 
 server is configured (see *Subtitles*), a **Generate Subtitles** button also appears.
 Long jobs stream their progress into an on-page **Log** overlay.
 
-**Account switch.** Every item records which Grok account(s) listed it (`accounts` in
-`metadata.json`; an item listed by two accounts belongs to both). With more than one
-account — or anything not attributed yet — an account menu appears in the top bar that
-scopes the whole library (views, search, facets, canvases) to one account, *All
-accounts*, *Unknown account* (items no sync has attributed yet), or *Local* (imports,
-montages, API generations). Each Sync attributes everything an account lists, including
-items it skips because they're already downloaded. To attribute an existing library
-without downloading anything, use **Re-attribute accounts…** in that menu, or the CLI:
-`python grokive.py attribute` (the default account, `grok_auth.txt`) and
-`python grokive.py attribute --curl grok_accounts/<id>.txt --account <id>` per extra
-account, then `python grokive.py index`. Items Grok no longer lists stay *Unknown*.
-
-**Per-account check & sync.** In Config → Grok accounts each account with a saved
-session has a **Check** button (one lightweight authenticated request to Grok —
-nothing downloaded — reporting *Session OK*, *Expired / 401 — paste a fresh cURL*, a
-Cloudflare/`cf_clearance` 403, rate limiting or a network error, with the time of the
-check; **Check all** tests every account at once) and a **sync** button that runs the
-normal Sync pipeline for just that account, even a paused one (`POST
-/api/accounts/<id>/sync`, or `POST /api/sync` with `{"account": "<id>"}`; one job at a
-time, so it answers 409 while another runs). Checks never log or return cookie values.
-
-**Incremental conversations & deep sync.** Media made in the current Imagine UI is
-archived conversation by conversation. Sync now only reads conversations that are new
-or whose *last modified* time changed since they were last archived cleanly, and stops
-listing once a whole page is unchanged (it keeps going if an earlier failure is still
-waiting to be retried, or if Grok's list isn't in last-modified order). The times are kept
-per account in `conversation_state.json`. A conversation with a failed download is not
-marked done, so it's retried next time. The first sync of an account (or one whose items
-aren't in the library) reads everything once. **Deep sync** keeps the old behaviour:
-it re-reads every conversation and then refreshes the saved times. Run it with the
-**Deep** button next to an account in Config → Grok accounts, Shift+click **Sync**,
-`POST /api/sync` with `{"deep": true}` (optionally with `"account"`), or
-`python grokive.py conversations --deep`. Favorites and Agent canvases are listed in full
-every sync, as before.
+Multi-account details — account switcher, per-account Check / Sync, attribution and
+incremental vs. deep sync — are in [What's different in this fork](#whats-different-in-this-fork).
 
 All state (`grok_auth.txt` + `grok_accounts.json`/`grok_accounts/` (Grok account
-sessions), `metadata.json`, `index.db` (the derived SQLite
+sessions), `conversation_state.json` (incremental conversation sync), `metadata.json`, `index.db` (the derived SQLite
 read-model), `library.json` (favorites/archive), `deleted_ids.json` (delete blocklist),
 `playlists.json`, `collections.json`, `collection_groups.json` (collection group lock state),
 `tags.json` (your hand-assigned media tags + tag colors),
@@ -149,7 +200,9 @@ of the id, so a single folder never fills with thousands of files.
 ### docker compose
 
 `docker-compose.yml` **pulls** the prebuilt image (`ghcr.io/starrlord/grokive:latest`) —
-it has no `build:` section, so don't add `--build` (it would have nothing to build):
+it has no `build:` section, so don't add `--build` (it would have nothing to build).
+That image is upstream's, without this fork's changes — to run grokive-multi in Docker,
+use the build file below:
 
 ```bash
 docker compose up -d
@@ -171,7 +224,8 @@ docker compose -f docker-compose.build.yml up -d --build
 ### Unraid
 
 The published image (`ghcr.io/starrlord/grokive:latest`) is pulled automatically — no
-building on the server needed.
+building on the server needed. (That image is upstream's and doesn't include this fork's
+changes; see [What's different in this fork](#whats-different-in-this-fork).)
 
 1. **Install the template** so it shows up in *Docker → Add Container → Template*: drop
    **`my-grokive.xml`** into the user-templates folder on the flash drive. From an Unraid
@@ -314,7 +368,7 @@ Flask API (`/api/media`, `/api/facets`, …). Highlights:
 - **Views:** Recent, All Media, **Library**, Favorites, Archive, and Canvases tabs. The **Library** tab is the single home for both **Collections** and **Playlists** (switchable inside it). All Media intentionally shows everything that still exists on disk, independent of archive or collection membership.
 - **Workspaces:** beyond browsing, two top-bar tools — **✦ Prompt Studio** (compose prompts) and **✨ Grok Imagine** (generate images & video). See those sections below.
 - **Collections:** group mixed images and videos into named cards with covers, organize related collection cards into named **collection groups**, then drill into each collection with the normal gallery controls and scoped tag/resolution filters. The landing opens with a **Recently active** row of oversized featured cards (default sort, wide screens), hovering a card makes its cover **come alive** — a muted looping clip, or a slow drift across the mosaic — and group cards wear a stacked-deck edge so containers read differently from single collections. **Import a folder** of local files into a new or existing collection (per-file progress; imports are auto-archived so they don't crowd Recent), and toggle **Group** inside an open collection to cluster its clips into *families* by the base image each was generated from (lineage traced through `parent_id`) — each family ready to merge-export or turn into a montage in one click.
-- **Command palette:** **Ctrl/Cmd+K** opens a fuzzy jump-to-anything — collections, playlists, and views — plus verb commands: type `play`, `shuffle`, or `queue` followed by a collection name to play it, play it shuffled, or add its videos to the Play Queue without leaving the keyboard.
+- **Command palette:** a fuzzy jump-to-anything (its Ctrl/Cmd+K shortcut is retired in this fork) — collections, playlists, and views — plus verb commands: type `play`, `shuffle`, or `queue` followed by a collection name to play it, play it shuffled, or add its videos to the Play Queue without leaving the keyboard.
 - **Play Queue:** a persistent, cross-library video queue, separate from any playlist — fill it from a collection card, a grid card's hover action, or select mode, reorder or shuffle it in its floating chip, play it back-to-back, or promote it into a saved playlist. It survives page reloads.
 - **Canvases:** browse canvas cards, drill into a canvas without leaving the Canvases tab, and use Back to return to the canvas grid.
 - **Justified photo grid** with infinite scroll and lazy thumbnails (*Grid* mode), or a
@@ -966,6 +1020,9 @@ and indexes) and `server.py` (the Flask + SvelteKit web app).
 - Python packages from `requirements-server.txt` (it includes `requirements.txt`).
 
 ### Set up and run
+
+Get the code first (`git clone https://github.com/icarussgames/grokive-multi.git` then
+`cd grokive-multi`).
 
 Windows (PowerShell):
 
