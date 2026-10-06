@@ -12,7 +12,7 @@
     searchWidenedFrom, narrowSearch,
     collections, collectionGroups, activeCollectionId, updateCollection, setSubCollectionCover, removeFromCollection, removeCollection, collectionsSettled, ensureMoviePolling, movieChip,
     galleryReload, requestGalleryReload, basket, enqueueBasket, montageMode, isMontageSource, isMontageQueueable,
-    playQueue, enqueuePlayQueue, shuffled, loadUserTags, userTagsVersion, accountCounts
+    playQueue, enqueuePlayQueue, shuffled, loadUserTags, userTagsVersion, accountCounts, setPeriod, periodLabel
   } from '$lib/state.js';
   import TopBar from '$lib/components/TopBar.svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
@@ -1049,6 +1049,13 @@
         </div>
         <MediaTypeTabs class="ml-auto" />
         <SortSelect />
+        {#if $filters.period !== 'all'}
+          <button type="button" class="inline-flex items-center gap-1.5 rounded-full border border-[var(--accent)] px-3 py-1 text-xs font-semibold text-[var(--accent)] transition hover:bg-[var(--accent)]/10"
+            title="Clear the date filter" onclick={() => setPeriod('all')}>
+            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>
+            {periodLabel($filters.period)} ✕
+          </button>
+        {/if}
         {#if hasCanvasRefinements}
           <button class="rounded-full border border-line px-3 py-1 text-xs font-semibold hover:border-[var(--accent)]" onclick={clearCanvasRefinements}>Reset filters ✕</button>
         {/if}
@@ -1151,6 +1158,13 @@
             class="inline-flex items-center gap-1.5 rounded-full border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1 text-xs font-semibold text-[var(--accent)] transition hover:bg-[var(--accent)]/20">
             <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
             Widened to All Media · search Recent only
+          </button>
+        {/if}
+        {#if $filters.period !== 'all'}
+          <button type="button" class="inline-flex items-center gap-1.5 rounded-full border border-[var(--accent)] px-3 py-1 text-xs font-semibold text-[var(--accent)] transition hover:bg-[var(--accent)]/10"
+            title="Clear the date filter" onclick={() => setPeriod('all')}>
+            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>
+            {periodLabel($filters.period)} ✕
           </button>
         {/if}
         {#if hasActiveFilters($filters)}

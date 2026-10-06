@@ -1,0 +1,210 @@
+"""Grok Imagine collections -> auxiliary ``grok:<name>`` tags.
+
+Grok lets you file posts into named collections on grok.com/imagine/saved. This step
+lists one account's collections and each collection's posts, maps them onto media the
+library ALREADY holds (nothing is downloaded), and writes the result to
+``grok_collections.json`` in the data dir:
+
+    {"version": 1, "accounts": {"<account id>": {
+        "collections": {"<collection id>": {"name", "isDefault", "updateTime"}},
+        "members": {"<collection id>": ["<media id>", ...]},
+        "listed": {"<collection id>": <post ids listed>},
+        "synced_at": "<UTC ISO>"}}}
+
+Each run replaces the account's entry wholesale, so an item taken out of a collection on
+Grok loses the tag on the next run. The index (db.build_index) turns members into
+``media_tags`` rows with source ``grok``.
+
+Endpoints (verified live 2026-10): ``POST /rest/media/collection/list`` ``{}`` ->
+``{"collections": [{id, name, isDefault, createTime, updateTime}]}``; membership is the
+favorites listing (``POST /rest/media/post/list``) with ``filter.collectionId``.
+
+Run: python grokcollections.py --curl grok_auth.txt [--account <id>]   (cwd = data dir)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+import gdownloader as g
+
+GROK_COLLECTION_LIST_ENDPOINT = "https://grok.com/rest/media/collection/list"
+# Membership filter for /rest/media/post/list. grok.com sends collectionId inside
+# `filter`; whether it also needs a `source` is unverified — add it here if Grok starts
+# ignoring the bare filter (e.g. {"source": "MEDIA_POST_SOURCE_COLLECTION"}).
+COLLECTION_FILTER_EXTRA: dict[str, Any] = {}
+COLLECTION_PAGE_SIZE = 40
+MAX_PAGES_PER_COLLECTION = 500
+STATE_FILE = Path("grok_collections.json")
+METADATA_FILE = Path("metadata.json")
+
+
+def collection_list_spec(auth_spec: g.RequestSpec) -> g.RequestSpec:
+    headers = dict(auth_spec.headers)
+    headers["Content-Type"] = "application/json"
+    return g.RequestSpec(method="POST", url=GROK_COLLECTION_LIST_ENDPOINT, headers=headers,
+                         cookies=auth_spec.cookies, body="{}")
+
+
+def collection_posts_spec(auth_spec: g.RequestSpec, collection_id: str) -> g.RequestSpec:
+    headers = dict(auth_spec.headers)
+    headers["Content-Type"] = "application/json"
+    body = {"limit": COLLECTION_PAGE_SIZE, "filter": {**COLLECTION_FILTER_EXTRA, "collectionId": collection_id}}
+    return g.RequestSpec(method="POST", url=g.GROK_FAVORITES_ENDPOINT, headers=headers,
+                         cookies=auth_spec.cookies, body=json.dumps(body, separators=(",", ":")))
+
+
+def list_collections(client: httpx.Client, auth_spec: g.RequestSpec) -> list[dict[str, Any]]:
+    data = g.request_json_with_backoff(client, collection_list_spec(auth_spec))
+    raw = data.get("collections") if isinstance(data, dict) else None
+    out = []
+    for c in raw or []:
+        if isinstance(c, dict) and c.get("id"):
+            out.append({
+                "id": str(c["id"]),
+                "name": str(c.get("name") or c["id"]).strip() or str(c["id"]),
+                "isDefault": bool(c.get("isDefault")),
+                "updateTime": str(c.get("updateTime") or ""),
+            })
+    return out
+
+
+def post_candidate_ids(page: Any) -> list[str]:
+    """Every id a listed post could be held under in the library: the records the
+    favorites path would make from it (extract_grok_media_items — post, child posts,
+    images, videos), every nested node id, and the asset id inside each media URL
+    (conversation-archived media is keyed by asset id)."""
+    ids: list[str] = [str(r["id"]) for r in g.extract_grok_media_items(page)]
+    raw = page.get("posts") if isinstance(page, dict) else None
+    for post in raw or []:
+        if not isinstance(post, dict):
+            continue
+        for node, _parent in g.grok_post_and_children(post):
+            node_id = g.first_value(node, g.ID_KEYS)
+            if node_id:
+                ids.append(str(node_id))
+            for key in ("mediaUrl", "thumbnailImageUrl", "hdMediaUrl", "url"):
+                val = node.get(key)
+                if isinstance(val, str):
+                    asset = g._asset_id_in_url(val)
+                    if asset:
+                        ids.append(asset)
+    return list(dict.fromkeys(ids))
+
+
+def list_collection_posts(client: httpx.Client, auth_spec: g.RequestSpec, collection_id: str,
+                          library_ids: set[str]) -> tuple[list[str], int, int, list[str]]:
+    """(held media ids, posts listed, posts with nothing in the library, first page's post
+    ids) for one collection."""
+    held: list[str] = []
+    posts = missing = 0
+    first_page: list[str] = []
+    for page in g.iter_pages(client, collection_posts_spec(auth_spec, collection_id), MAX_PAGES_PER_COLLECTION):
+        listed = [p for p in (page.get("posts") if isinstance(page, dict) else None) or [] if isinstance(p, dict)]
+        if not first_page:
+            first_page = [str(p.get("id") or "") for p in listed]
+        for post in listed:
+            posts += 1
+            mine = [i for i in post_candidate_ids({"posts": [post]}) if i in library_ids]
+            if mine:
+                held.extend(mine)
+            else:
+                missing += 1
+    return list(dict.fromkeys(held)), posts, missing, first_page
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"version": 1, "accounts": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("accounts"), dict):
+        return {"version": 1, "accounts": {}}
+    return data
+
+
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    g._atomic_write_text(path, json.dumps(state, indent=1, sort_keys=True, ensure_ascii=False))
+
+
+def sync_collections(client: httpx.Client, auth_spec: g.RequestSpec, library_ids: set[str],
+                     account: str, state_path: Path = STATE_FILE) -> int:
+    """List, map and store one account's collections. Returns a process exit code."""
+    collections = list_collections(client, auth_spec)
+    skipped_default = [c["name"] for c in collections if c["isDefault"]]
+    wanted = [c for c in collections if not c["isDefault"]]
+    print(f"collections: {len(collections)} on Grok"
+          + (f" ({len(skipped_default)} default skipped: {', '.join(skipped_default)})" if skipped_default else ""))
+    members: dict[str, list[str]] = {}
+    listed: dict[str, int] = {}
+    first_pages: dict[str, tuple[str, ...]] = {}
+    missing_total = 0
+    for c in wanted:
+        held, posts, missing, first = list_collection_posts(client, auth_spec, c["id"], library_ids)
+        members[c["id"]] = held
+        listed[c["id"]] = posts
+        if first:
+            first_pages[c["id"]] = tuple(first)
+        missing_total += missing  # posts none of whose ids are in the library
+        print(f"collection '{c['name']}': {posts} post(s) listed, {len(held)} library item(s) tagged")
+        time.sleep(0.5)
+    # post/list fails OPEN on filters it doesn't recognise (see the favorites warning in
+    # gdownloader.main): if every non-empty collection came back with the very same first
+    # page, the collectionId filter was ignored and these are NOT memberships.
+    distinct = set(first_pages.values())
+    if len(first_pages) >= 2 and len(distinct) == 1:
+        print("WARNING: every collection listed the same posts — Grok seems to be ignoring the "
+              "collectionId filter. Keeping the previous collection tags; adjust "
+              "COLLECTION_FILTER_EXTRA in grokcollections.py.")
+        return 1
+    if missing_total:
+        print(f"collections: {missing_total} listed post(s) aren't in the library yet "
+              f"(not downloaded here — a Sync / Deep sync fetches media)")
+    state = load_state(state_path)
+    state["accounts"][account] = {
+        "collections": {c["id"]: {"name": c["name"], "isDefault": c["isDefault"], "updateTime": c["updateTime"]}
+                        for c in wanted},
+        "members": members,
+        "listed": listed,
+        "synced_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    save_state(state_path, state)
+    tagged = len({i for ids in members.values() for i in ids})
+    print(f"collections: {len(wanted)} collection(s) stored, {tagged} library item(s) tagged")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Tag library items with their Grok Imagine collections (no downloads).")
+    ap.add_argument("--curl", type=Path, default=Path("grok_auth.txt"))
+    ap.add_argument("--account", default=None,
+                    help="Account id the collections belong to (default: derived from --curl).")
+    ap.add_argument("--metadata", type=Path, default=METADATA_FILE)
+    ap.add_argument("--state", type=Path, default=STATE_FILE)
+    args = ap.parse_args(argv)
+    account = (args.account or "").strip() or g.account_from_curl_path(args.curl)
+    curl_path = args.curl
+    if not curl_path.exists() and curl_path.with_name("curl_samples.txt").exists():
+        curl_path = curl_path.with_name("curl_samples.txt")
+    auth_spec = g.choose_grok_auth_spec(g.parse_curl_samples(curl_path))
+    library_ids = {str(r.get("id")) for r in g.load_metadata(args.metadata) if isinstance(r, dict) and r.get("id")}
+    with httpx.Client(follow_redirects=True) as client:
+        try:
+            return sync_collections(client, auth_spec, library_ids, account, args.state)
+        except httpx.HTTPStatusError as exc:
+            print(f"collections: Grok answered HTTP {exc.response.status_code} — skipped "
+                  f"({'session expired? Check auth in Config' if exc.response.status_code in (401, 403) else 'try again later'})")
+            return 1
+        except httpx.HTTPError as exc:
+            print(f"collections: network error ({type(exc).__name__}) — skipped")
+            return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

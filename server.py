@@ -513,6 +513,10 @@ def _sync_worker(only: str | None = None, deep: bool = False) -> None:
                 # its chain isn't on the post — it only exists in the conversation.
                 acct_rc = _run_step(f"conversations{tag}", [py, cli, "conversations", *acct_args,
                                                             *(["--deep"] if deep else [])])
+            if acct_rc == 0:
+                # Grok collections -> grok:<name> tags (no downloads). Best-effort: a
+                # failure here is logged but never fails the sync.
+                _run_step(f"collections{tag}", [py, cli, "collections", *acct_args])
             if acct_rc != 0:
                 failures += 1
                 rc = acct_rc
@@ -1798,7 +1802,23 @@ def api_accounts_delete(acct_id: str) -> Response:
         _save_accounts(keep)
     with _auth_check_lock:
         _auth_checks.pop(acct_id, None)
+    _drop_grok_collections(acct_id)
     return jsonify(ok=True)
+
+
+def _drop_grok_collections(acct_id: str) -> None:
+    """Forget a deleted account's Grok collections (its grok:<name> tags go with the next
+    index rebuild)."""
+    path = DATA_DIR / "grok_collections.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if isinstance(data, dict) and isinstance(data.get("accounts"), dict) and acct_id in data["accounts"]:
+        del data["accounts"][acct_id]
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -5627,9 +5647,9 @@ def _multi_arg(name: str, split: bool = True) -> list[str]:
 
 
 def _tag_source_arg() -> str:
-    """?tag_source= user | auto | all (default): which tag kinds the tag filter matches."""
+    """?tag_source= user | auto | grok | all (default): which tag kinds the tag filter matches."""
     v = str(request.args.get("tag_source") or "all").strip().lower()
-    return v if v in ("user", "auto") else "all"
+    return v if v in ("user", "auto", "grok") else "all"
 
 
 def _tag_mode_arg() -> str:
@@ -5649,32 +5669,63 @@ def _int_arg(name: str, default: int) -> int:
         return default
 
 
-def _period_range(period: str) -> tuple[str | None, str | None]:
-    """Map a named period to (start, end) ISO-date bounds (end exclusive), using
-    the server's current date. Rolling windows for last-N; calendar for month/year."""
-    today = datetime.date.today()
+def _tz_offset_arg() -> int | None:
+    """?tz_offset= the viewer's minutes east of UTC (JS -getTimezoneOffset()); None if absent."""
+    raw = request.args.get("tz_offset")
+    if raw is None or raw == "":
+        return None
+    try:
+        return max(-12 * 60, min(14 * 60, int(raw)))
+    except (TypeError, ValueError):
+        return None
+
+
+_MONTH_PERIOD_RE = re.compile(r"^m:(\d{4})-(\d{2})$")
+
+
+def _period_range(period: str, tz_offset: int | None = None) -> tuple[str | None, str | None]:
+    """Map a named period to (start, end) bounds for ``created_at`` (end exclusive).
+
+    Day/month/year boundaries are LOCAL midnights — the viewer's when the browser sends
+    ``tz_offset`` (minutes east of UTC), otherwise the server's — converted to the UTC
+    instants ``created_at`` (Grok's createTime, UTC ISO) is stored in. Rolling windows
+    (last N days) end at tomorrow's local midnight. Periods: hour1/4/8, today, yesterday,
+    last7/14/30/60, month (this month), year (this year), and ``m:YYYY-MM`` (that month)."""
     td = datetime.timedelta
-    tomorrow = (today + td(days=1)).isoformat()
-    # Sub-day windows: created_at is stored as UTC ISO (Grok's createTime), so
-    # compute the lower bound in UTC for accurate hour math; upper bound is open.
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
     hours = {"hour1": 1, "hour4": 4, "hour8": 8}.get(period)
     if hours is not None:
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
         return (now_utc - td(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S"), None
+    if tz_offset is None:
+        local_off = datetime.datetime.now().astimezone().utcoffset() or td(0)
+    else:
+        local_off = td(minutes=tz_offset)
+    local_now = (now_utc + local_off).replace(tzinfo=None)
+    today = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def bound(local_midnight: datetime.datetime) -> str:
+        return db._created_bound(local_midnight - local_off)
+
+    tomorrow = bound(today + td(days=1))
+    m = _MONTH_PERIOD_RE.match(period or "")
+    if m:
+        year, month = int(m.group(1)), int(m.group(2))
+        if not (1 <= month <= 12 and 1970 <= year <= 9999):
+            return None, None
+        first = datetime.datetime(year, month, 1)
+        nxt = datetime.datetime(year + (month == 12), month % 12 + 1, 1)
+        return bound(first), bound(nxt)
     if period == "today":
-        return today.isoformat(), tomorrow
+        return bound(today), tomorrow
     if period == "yesterday":
-        return (today - td(days=1)).isoformat(), today.isoformat()
-    if period == "last7":
-        return (today - td(days=6)).isoformat(), tomorrow
-    if period == "last14":
-        return (today - td(days=13)).isoformat(), tomorrow
-    if period == "last30":
-        return (today - td(days=29)).isoformat(), tomorrow
+        return bound(today - td(days=1)), bound(today)
+    days = {"last7": 7, "last14": 14, "last30": 30, "last60": 60}.get(period)
+    if days:
+        return bound(today - td(days=days - 1)), tomorrow
     if period == "month":
-        return today.replace(day=1).isoformat(), tomorrow
+        return bound(today.replace(day=1)), tomorrow
     if period == "year":
-        return today.replace(month=1, day=1).isoformat(), tomorrow
+        return bound(today.replace(month=1, day=1)), tomorrow
     return None, None
 
 
@@ -5703,7 +5754,7 @@ def api_media() -> Response:
             collection_ids = collection.get("ids", []) or ["__grokive_empty_collection__"]
         else:
             collection_ids = ["__grokive_missing_collection__"]
-    start, end = _period_range(request.args.get("period", "all"))
+    start, end = _period_range(request.args.get("period", "all"), _tz_offset_arg())
     # "Uncollected" rides the hidden-exclusion path: fold every collection's ids into
     # the not-in set. Meaningless while scoped to a collection, so ignored there.
     hidden = _hidden_media_ids(collection_ids if (collection_id and collection_id in _session_unlocked()) else None)
@@ -5747,7 +5798,7 @@ def api_facets() -> Response:
             collection_ids = collection.get("ids", []) or ["__grokive_empty_collection__"]
         else:
             collection_ids = ["__grokive_missing_collection__"]
-    start, end = _period_range(request.args.get("period", "all"))
+    start, end = _period_range(request.args.get("period", "all"), _tz_offset_arg())
     # Same "uncollected" fold as /api/media so facet counts match the filtered grid.
     facet_hidden = _hidden_media_ids(collection_ids if (collection_id and collection_id in _session_unlocked()) else None)
     if request.args.get("uncollected") in ("1", "true") and not collection_id:
@@ -5770,6 +5821,7 @@ def api_facets() -> Response:
         tag_source=_tag_source_arg(),
         tag_mode=_tag_mode_arg(),
         account=_account_arg(),
+        tz_offset_minutes=_tz_offset_arg() or 0,
     ))
 
 

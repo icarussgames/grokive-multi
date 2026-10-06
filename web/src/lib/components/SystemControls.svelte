@@ -89,7 +89,7 @@
 
   // Friendly labels for the optional Autonomous Mode post-sync steps (server step names
   // are terse). Everything else shows its raw step name, as before.
-  const STEP_LABELS = { embed: 'Updating prompt index', library: 'Importing prompts', subtitles: 'Generating subtitles', autotag: 'Tagging prompts', attribute: 'Listing account' };
+  const STEP_LABELS = { embed: 'Updating prompt index', library: 'Importing prompts', subtitles: 'Generating subtitles', autotag: 'Tagging prompts', attribute: 'Listing account', collections: 'Grok collections' };
   // Multi-account syncs suffix the per-account steps with the account name —
   // "download [Personal]" — so split that back into (base step, account) for display.
   const stepParts = (s) => {

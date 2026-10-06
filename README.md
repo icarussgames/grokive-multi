@@ -54,6 +54,18 @@ cd grokive-multi
   picker in select mode, **My tags** filters (match any / all), and a **Manage tags** panel to
   rename, merge, recolor or delete. Stored in `tags.json` in the data directory (included in
   backups). See *My tags* under [Web App](#web-app-modern-ui).
+- **Grok collections as tags.** The collections you make on grok.com/imagine/saved (e.g.
+  *amh_kira_v4*, *moon tactics*) become read-only `grok:<name>` tags: their own
+  **Grok collections** group in the left filter panel, a read-only row in the lightbox, and
+  filterable / searchable like any tag (combined with the account switch, date, etc.). Every
+  Sync (also *Sync this account* and Deep sync) lists each account's collections after its
+  downloads and tags the matching library items — nothing is downloaded by this step, and
+  it's a full refresh, so taking an item out of a collection on Grok removes the tag. The
+  default *Liked* collection is skipped (it duplicates favorites). Stored per account in
+  `grok_collections.json`; a failure is logged and never fails the sync. Run it by hand
+  with `python grokive.py collections` (default account) or
+  `python grokive.py collections --curl grok_accounts/<id>.txt --account <id>`, then
+  `python grokive.py index`.
 - **Account labels.** Each item's account(s) appear as labels in the lightbox and drive the
   account filter, alongside your own tags.
 
@@ -74,6 +86,18 @@ cd grokive-multi
   Changes that don't bump a conversation's `modifyTime` (e.g. a 1080p render that appears
   later) are only picked up by a deep sync — run one now and then. Favorites and Agent
   canvases are still listed in full on every sync.
+
+### Date navigation
+
+- A **Date** section at the top of the left filter panel: *All time*, *Last 30 days*,
+  *Last 60 days*, and every year → month that actually has items (with counts, newest
+  first); click a month to show just that month. It combines with everything else (account
+  switch, tags, Grok collections, models, search, sort), and the active range shows as a
+  removable chip above the grid. Dates are Grok's creation time (`created_at`); day and
+  month boundaries follow your **browser's local time** (the Display popover's periods
+  now do too, and gained *Last 60 days*). API: `period=last30|last60|m:YYYY-MM` plus
+  `tz_offset=<minutes east of UTC>` on `/api/media` and `/api/facets` (which returns
+  `months`).
 
 ### Smaller changes
 
@@ -182,7 +206,8 @@ Multi-account details — account switcher, per-account Check / Sync, attributio
 incremental vs. deep sync — are in [What's different in this fork](#whats-different-in-this-fork).
 
 All state (`grok_auth.txt` + `grok_accounts.json`/`grok_accounts/` (Grok account
-sessions), `conversation_state.json` (incremental conversation sync), `metadata.json`, `index.db` (the derived SQLite
+sessions), `conversation_state.json` (incremental conversation sync), `grok_collections.json`
+(Grok collection tags), `metadata.json`, `index.db` (the derived SQLite
 read-model), `library.json` (favorites/archive), `deleted_ids.json` (delete blocklist),
 `playlists.json`, `collections.json`, `collection_groups.json` (collection group lock state),
 `tags.json` (your hand-assigned media tags + tag colors),

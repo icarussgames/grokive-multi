@@ -634,6 +634,16 @@
           </div>
         {/if}
         <TagEditor {item} onbrowse={browseTag} />
+        {#if item.grok_tags?.length}
+          <!-- Grok Imagine collections the item is filed in on grok.com — read-only here. -->
+          <div class="mb-3 flex flex-wrap items-center gap-2">
+            <span class="text-xs font-bold uppercase tracking-wide text-muted">Grok collections</span>
+            {#each item.grok_tags as tag (tag)}
+              <button type="button" class="rounded-full border border-dashed border-line px-3 py-1 text-xs font-semibold transition hover:border-[var(--accent)]"
+                title={`Show everything in the Grok collection “${tag.replace(/^grok:/, '')}”`} onclick={() => browseTag(tag)}>{tag.replace(/^grok:/, '')}</button>
+            {/each}
+          </div>
+        {/if}
         {#if item.tags?.length}
           <div class="mb-3 flex flex-wrap items-center gap-2">
             <span class="text-xs font-bold uppercase tracking-wide text-muted">Prompt tags</span>

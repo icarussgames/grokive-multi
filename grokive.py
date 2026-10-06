@@ -190,6 +190,15 @@ def main() -> int:
                            help="Account id to record (default: derived from --curl; grok_auth.txt = 'default').")
     attribute.add_argument("--max-pages", default="5000")
 
+    collections = sub.add_parser(
+        "collections",
+        help="Tag library items with their Grok Imagine collections (grok:<name> tags; no downloads). "
+             "Writes grok_collections.json; run `index` afterwards to refresh the web UI.",
+    )
+    collections.add_argument("--curl", default=default_curl())
+    collections.add_argument("--account", default=None,
+                             help="Account id the collections belong to (default: derived from --curl; grok_auth.txt = 'default').")
+
     sub.add_parser("index", help="Generate missing thumbnails and (re)build the SQLite index (index.db) the web UI queries.")
 
     sub.add_parser("motioncache", help="Pre-analyze library videos' motion into the montage cache (speeds up Beat Montage; powers Auto Montage clip picking).")
@@ -239,6 +248,11 @@ def main() -> int:
         return run(cmd)
     if args.command == "attribute":
         return attribute_account(args)
+    if args.command == "collections":
+        cmd = [sys.executable, script("grokcollections.py"), "--curl", args.curl]
+        if args.account:
+            cmd += ["--account", args.account]
+        return run(cmd)
     if args.command == "post":
         cmd = [
             sys.executable, script("gdownloader.py"),

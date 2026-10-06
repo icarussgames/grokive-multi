@@ -116,7 +116,7 @@ export const filters = writable({
   resolutions: [], // selected "<shorter-side>-<orientation>" buckets, e.g. ['720-landscape', '720-portrait']
   canvas: null,
   mediaType: 'all',
-  period: 'all', // all | hour1 | hour4 | hour8 | today | yesterday | last7 | last14 | last30 | month | year
+  period: 'all', // all | hour1 | hour4 | hour8 | today | yesterday | last7 | last14 | last30 | last60 | month | year | m:YYYY-MM
   uncollected: false, // Archive-view toggle: only items in NO collection or sub-collection
   sort: 'new'
 });
@@ -279,7 +279,34 @@ export function setSort(sort) {
   filters.update((f) => ({ ...f, sort }));
 }
 export function setPeriod(period) {
-  filters.update((f) => ({ ...f, period }));
+  filters.update((f) => ({ ...f, period: period || 'all' }));
+}
+// Named time periods (Display popover + Date panel). A specific month is 'm:YYYY-MM'.
+export const PERIODS = [
+  { id: 'all', label: 'All time' },
+  { id: 'hour1', label: 'Last hour' },
+  { id: 'hour4', label: 'Last 4 hours' },
+  { id: 'hour8', label: 'Last 8 hours' },
+  { id: 'today', label: 'Today' },
+  { id: 'yesterday', label: 'Yesterday' },
+  { id: 'last7', label: 'Last 7 days' },
+  { id: 'last14', label: 'Last 14 days' },
+  { id: 'last30', label: 'Last 30 days' },
+  { id: 'last60', label: 'Last 60 days' },
+  { id: 'month', label: 'This month' },
+  { id: 'year', label: 'This year' }
+];
+export function monthLabel(ym, style = 'long') {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(ym || ''));
+  if (!m) return String(ym || '');
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, 1);
+  return d.toLocaleDateString(undefined, style === 'short' ? { month: 'short' } : { month: 'long', year: 'numeric' });
+}
+export function periodLabel(period) {
+  const p = String(period || 'all');
+  if (p.startsWith('m:')) return monthLabel(p.slice(2));
+  const hit = PERIODS.find((x) => x.id === p);
+  return hit ? hit.label : p;
 }
 export function clearFilters() {
   filters.update((f) => ({ ...f, query: '', tags: [], models: [], resolutions: [], canvas: null, mediaType: 'all', period: 'all', uncollected: false }));

@@ -1,5 +1,5 @@
 <script>
-  import { filters, setView, setQuery, searchAllMedia, widenSearch, narrowSearch, searchWidenedFrom, setSort, setPeriod, theme, mode, counts, selectMode, setSelectMode, resetAll, toggleLight, openStudio, studioTab, activeCollectionId } from '$lib/state.js';
+  import { filters, setView, setQuery, searchAllMedia, widenSearch, narrowSearch, searchWidenedFrom, setSort, setPeriod, PERIODS, periodLabel, theme, mode, counts, selectMode, setSelectMode, resetAll, toggleLight, openStudio, studioTab, activeCollectionId } from '$lib/state.js';
   import SystemControls from './SystemControls.svelte';
   import AccountSwitcher from './AccountSwitcher.svelte';
   import SearchField from './SearchField.svelte';
@@ -8,19 +8,12 @@
 
   let { onrefresh = () => {}, onfilters = () => {}, onmenu = () => {}, onplay = () => {}, onmontage = () => {} } = $props();
 
-  const periods = [
-    { id: 'all', label: 'All time' },
-    { id: 'hour1', label: 'Last hour' },
-    { id: 'hour4', label: 'Last 4 hours' },
-    { id: 'hour8', label: 'Last 8 hours' },
-    { id: 'today', label: 'Today' },
-    { id: 'yesterday', label: 'Yesterday' },
-    { id: 'last7', label: 'Last 7 days' },
-    { id: 'last14', label: 'Last 14 days' },
-    { id: 'last30', label: 'Last 30 days' },
-    { id: 'month', label: 'This month' },
-    { id: 'year', label: 'This year' }
-  ];
+  // A month picked in the sidebar's Date panel ('m:YYYY-MM') shows as its own option.
+  const periods = $derived(
+    String($filters.period || '').startsWith('m:')
+      ? [...PERIODS, { id: $filters.period, label: periodLabel($filters.period) }]
+      : PERIODS
+  );
 
   const views = [
     { id: 'recent', label: 'Recent' },

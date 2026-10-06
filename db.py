@@ -9,10 +9,13 @@ results and real full-text prompt search (FTS5).
 Favorites / archive / playlists still live in their JSON files for now and are
 applied as filters by the API layer; a later phase can fold them into tables here.
 
-Tags come from two sources, told apart by ``media_tags.source``: ``auto`` tags are
+Tags come from three sources, told apart by ``media_tags.source``: ``auto`` tags are
 lifted from prompts at index time (mediautil.tags_for_groups), ``user`` tags are the
-ones the user assigns by hand. User tags are DURABLE state in ``tags.json`` (owned by
-the server); the index only mirrors them so search / filter / facets can use them.
+ones the user assigns by hand, and ``grok`` tags (``grok:<collection name>``) mirror the
+user's Grok Imagine collections. User tags are DURABLE state in ``tags.json`` (owned by
+the server); grok tags come from ``grok_collections.json`` (written by
+grokcollections.py on sync). The index only mirrors both so search / filter / facets
+can use them.
 """
 
 from __future__ import annotations
@@ -107,7 +110,40 @@ MEDIA_COLUMNS = [
 
 # Durable user-tag state (see the module docstring), a sibling of metadata.json.
 USER_TAGS_FILE = "tags.json"
-TAG_SOURCES = ("auto", "user")
+TAG_SOURCES = ("auto", "user", "grok")
+# Grok Imagine collections, per account (see grokcollections.py); indexed as
+# ``grok:<name>`` tags with source 'grok' — read-only in the UI.
+GROK_COLLECTIONS_FILE = "grok_collections.json"
+GROK_TAG_PREFIX = "grok:"
+
+
+def load_grok_collection_tags(path: str | Path) -> dict[str, list[str]]:
+    """``{media_id: ["grok:<collection name>", ...]}`` across every account in
+    ``grok_collections.json``. Tolerant: missing/unreadable reads as none."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    accounts = data.get("accounts") if isinstance(data, dict) else None
+    if not isinstance(accounts, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for acct in accounts.values():
+        if not isinstance(acct, dict):
+            continue
+        colls = acct.get("collections") if isinstance(acct.get("collections"), dict) else {}
+        members = acct.get("members") if isinstance(acct.get("members"), dict) else {}
+        for cid, ids in members.items():
+            meta = colls.get(cid) if isinstance(colls.get(cid), dict) else None
+            name = str((meta or {}).get("name") or "").strip()
+            if not name or not isinstance(ids, list):
+                continue
+            tag = GROK_TAG_PREFIX + name
+            for mid in ids:
+                tags = out.setdefault(str(mid), [])
+                if tag not in tags:
+                    tags.append(tag)
+    return out
 # Account-filter value for items no account has claimed yet (can't collide with a real
 # id: those are "default" or token_hex, see server._ACCOUNT_ID_RE).
 UNKNOWN_ACCOUNT = "__unknown__"
@@ -169,7 +205,7 @@ def _ensure_tag_schema(conn: sqlite3.Connection) -> None:
 
 
 def _tag_sources(tag_source: str) -> tuple[str, ...]:
-    """Which ``media_tags.source`` values a tag filter matches: 'user', 'auto' or both."""
+    """Which ``media_tags.source`` values a tag filter matches: one source, or all."""
     return (tag_source,) if tag_source in TAG_SOURCES else TAG_SOURCES
 
 
@@ -195,12 +231,14 @@ def _tag_filter_clause(tags: Iterable[str], tag_source: str = "all", tag_mode: s
 
 
 def _attach_tags(conn: sqlite3.Connection, d: dict[str, Any]) -> dict[str, Any]:
-    """Prompt-derived ``tags`` and hand-assigned ``user_tags``, kept apart."""
-    d["tags"], d["user_tags"] = [], []
+    """Prompt-derived ``tags``, hand-assigned ``user_tags`` and Grok-collection
+    ``grok_tags`` (``grok:<name>``), kept apart."""
+    d["tags"], d["user_tags"], d["grok_tags"] = [], [], []
     for tag, source in conn.execute(
         "SELECT tag, source FROM media_tags WHERE media_id = ? ORDER BY tag COLLATE NOCASE", (d["id"],)
     ):
-        (d["user_tags"] if source == "user" else d["tags"]).append(tag)
+        key = "user_tags" if source == "user" else ("grok_tags" if source == "grok" else "tags")
+        d[key].append(tag)
     d["accounts"] = [r[0] for r in conn.execute(
         "SELECT account_id FROM media_accounts WHERE media_id = ? ORDER BY rowid", (d["id"],)
     )]
@@ -266,6 +304,7 @@ def build_index(
     gallery_dir: str | Path,
     thumbnails_dir: str | Path | None = None,
     user_tags_path: str | Path | None = None,
+    grok_collections_path: str | Path | None = None,
 ) -> int:
     """(Re)build the index from metadata.json. Returns the number of rows written.
 
@@ -440,12 +479,17 @@ def build_index(
         user_tags = load_user_tag_items(
             user_tags_path if user_tags_path is not None else metadata_path.parent / USER_TAGS_FILE
         )
+        grok_tags = load_grok_collection_tags(
+            grok_collections_path if grok_collections_path is not None
+            else metadata_path.parent / GROK_COLLECTIONS_FILE
+        )
         indexed = {r[0] for r in fts_rows}
         for row in fts_rows:
-            extra = user_tags.get(row[0])
+            extra = [*user_tags.get(row[0], []), *grok_tags.get(row[0], [])]
             if extra:
                 row[2] = " ".join([row[2], *extra]).strip()
         tag_rows.extend((mid, tag, "user") for mid, tl in user_tags.items() if mid in indexed for tag in tl)
+        tag_rows.extend((mid, tag, "grok") for mid, tl in grok_tags.items() if mid in indexed for tag in tl)
         conn.execute("DELETE FROM media")
         conn.execute("DELETE FROM media_tags")
         conn.execute("DELETE FROM media_accounts")
@@ -497,7 +541,7 @@ def set_user_tags(db_path: str | Path, mapping: dict[str, list[str]]) -> int:
             qmarks = ",".join("?" for _ in chunk)
             auto: dict[str, list[str]] = {}
             for mid, tag in conn.execute(
-                f"SELECT media_id, tag FROM media_tags WHERE source = 'auto' AND media_id IN ({qmarks})", chunk
+                f"SELECT media_id, tag FROM media_tags WHERE source IN ('auto', 'grok') AND media_id IN ({qmarks})", chunk
             ):
                 auto.setdefault(mid, []).append(tag)
             fts = conn.execute(f"SELECT rowid, id FROM media_fts WHERE id IN ({qmarks})", chunk).fetchall()
@@ -880,8 +924,13 @@ def facets(
     tag_source: str = "all",
     tag_mode: str = "any",
     account: str | None = None,
+    tz_offset_minutes: int = 0,
 ) -> dict[str, Any]:
-    """Tag / model / canvas / resolution / account counts for the current browsing scope.
+    """Tag / model / canvas / resolution / account / month counts for the current scope.
+
+    ``months`` groups by the month of ``created_at`` in the viewer's local time
+    (``tz_offset_minutes`` east of UTC), newest first, ignoring the date filter itself so
+    the Date panel can still offer every month.
 
     Cross-facet: each facet's counts reflect the OTHER active chip selections but
     exclude its own dimension — so selecting tags narrows the resolution and model
@@ -926,12 +975,6 @@ def facets(
         if media_type in ("image", "video"):
             where.append("m.media_type = ?")
             params.append(media_type)
-        if start:
-            where.append("m.created_at >= ?")
-            params.append(start)
-        if end:
-            where.append("m.created_at < ?")
-            params.append(end)
 
         # Per-dimension chip clauses (match-ANY within a dimension), each as (sql, params).
         # A facet applies every OTHER dimension's clause but not its own, so selecting
@@ -948,6 +991,17 @@ def facets(
 
         def account_clause() -> tuple[str | None, list[Any]]:
             return _account_clause(account)
+
+        def date_clause() -> tuple[str | None, list[Any]]:
+            parts: list[str] = []
+            ps: list[Any] = []
+            if start:
+                parts.append("m.created_at >= ?")
+                ps.append(start)
+            if end:
+                parts.append("m.created_at < ?")
+                ps.append(end)
+            return (" AND ".join(parts) if parts else None), ps
 
         def model_clause() -> tuple[str | None, list[Any]]:
             ml = [m for m in models if m]
@@ -985,7 +1039,7 @@ def facets(
                     p.extend(ps)
             return ((" WHERE " + " AND ".join(w)) if w else ""), p
 
-        tags_where, tags_params = compose(model_clause(), res_clause(), account_clause())
+        tags_where, tags_params = compose(model_clause(), res_clause(), account_clause(), date_clause())
 
         def source_tag_rows(source: str) -> list[dict[str, Any]]:
             src_where = (tags_where + " AND" if tags_where else " WHERE") + " mt.source = ?"
@@ -1001,7 +1055,8 @@ def facets(
         # `tags` keeps its meaning (prompt-derived); hand-assigned tags count separately.
         tag_rows = source_tag_rows("auto")
         user_tag_rows = source_tag_rows("user")
-        models_where, models_params = compose(tag_clause(), res_clause(), account_clause())
+        grok_tag_rows = source_tag_rows("grok")
+        models_where, models_params = compose(tag_clause(), res_clause(), account_clause(), date_clause())
         model_rows = [
             {"name": r["model"] or "Unknown model", "count": r["n"]}
             for r in conn.execute(
@@ -1010,7 +1065,7 @@ def facets(
                 models_params,
             )
         ]
-        canvas_where, canvas_params = compose(tag_clause(), model_clause(), res_clause(), account_clause())
+        canvas_where, canvas_params = compose(tag_clause(), model_clause(), res_clause(), account_clause(), date_clause())
         # created_at/updated_at are derived from the canvas's own media (a canvas has no
         # row of its own): oldest item = when it started, newest = when it last grew.
         # The Canvases landing sorts on them (Recent / Recently updated).
@@ -1031,7 +1086,7 @@ def facets(
                 canvas_params,
             )
         ]
-        res_base_where, res_params = compose(tag_clause(), model_clause(), account_clause())
+        res_base_where, res_params = compose(tag_clause(), model_clause(), account_clause(), date_clause())
         res_where = (res_base_where + " AND" if res_base_where else " WHERE") + \
             " m.media_w IS NOT NULL AND m.media_h IS NOT NULL"
         resolution_rows = [
@@ -1047,7 +1102,7 @@ def facets(
         ]
         # Account counts (the master switch's menu): every other chip applies, the account
         # itself doesn't. Unattributed items count under UNKNOWN_ACCOUNT.
-        acct_where, acct_params = compose(tag_clause(), model_clause(), res_clause())
+        acct_where, acct_params = compose(tag_clause(), model_clause(), res_clause(), date_clause())
         account_rows = [
             {"id": r["account_id"], "count": r["n"]}
             for r in conn.execute(
@@ -1061,11 +1116,26 @@ def facets(
         unknown = conn.execute(f"SELECT COUNT(*) FROM media m{joins}{unk_where}", acct_params).fetchone()[0]
         if unknown:
             account_rows.append({"id": UNKNOWN_ACCOUNT, "count": unknown})
+        # Month counts (the Date panel): every other chip applies, the date filter doesn't.
+        # Bucketed in the viewer's local time: created_at is UTC ISO, so shift it by the
+        # offset before taking YYYY-MM (substr drops fractional seconds / the Z suffix).
+        month_where, month_params = compose(tag_clause(), model_clause(), res_clause(), account_clause())
+        month_mod = f"{int(tz_offset_minutes):+d} minutes"
+        month_rows = [
+            {"month": r["ym"], "count": r["n"]}
+            for r in conn.execute(
+                f"SELECT strftime('%Y-%m', substr(m.created_at, 1, 19), ?) ym, COUNT(*) n FROM media m{joins}"
+                f"{month_where}{' AND' if month_where else ' WHERE'} m.created_at IS NOT NULL AND m.created_at != '' "
+                f"GROUP BY ym HAVING ym IS NOT NULL ORDER BY ym DESC",
+                [month_mod, *month_params],
+            )
+        ]
         # Total stays the scope count (ignores chips) — its prior meaning; unused by the UI.
-        total = conn.execute(f"SELECT COUNT(*) FROM media m{joins}"
-                             f"{(' WHERE ' + ' AND '.join(where)) if where else ''}", params).fetchone()[0]
-        return {"tags": tag_rows, "user_tags": user_tag_rows, "accounts": account_rows, "models": model_rows, "canvases": canvas_rows,
-                "resolutions": resolution_rows, "total": total}
+        total_where, total_params = compose(date_clause())
+        total = conn.execute(f"SELECT COUNT(*) FROM media m{joins}{total_where}", total_params).fetchone()[0]
+        return {"tags": tag_rows, "user_tags": user_tag_rows, "grok_tags": grok_tag_rows,
+                "accounts": account_rows, "models": model_rows, "canvases": canvas_rows,
+                "resolutions": resolution_rows, "months": month_rows, "total": total}
     finally:
         conn.close()
 
