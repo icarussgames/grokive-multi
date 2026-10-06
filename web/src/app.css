@@ -1015,7 +1015,11 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; max-width: 100%; }
+/* min-height (not height): a height:100% body becomes a viewport-tall sticky
+   containing block, so the sticky top bar (Settings + Recent/Library rows) scrolls
+   away with the gallery. min-height:100dvh still fills short pages; the filter rail
+   and header then stick correctly against the growing document. */
+html, body { margin: 0; min-height: 100dvh; max-width: 100%; }
 /* Safety net against horizontal page scroll on mobile. `clip` (not `hidden`)
    keeps the sticky top bar working — it doesn't turn the page into a scroll
    container the way `overflow: hidden` would. */
