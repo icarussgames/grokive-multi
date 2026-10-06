@@ -1,6 +1,6 @@
 <script>
   import { justify } from '$lib/justified.js';
-  import { favorites, stashed, toggleFavorite, setStashed, removeMedia, setSelection, addSelection, setSelectMode, selectionMembers, sendToImagine, toggleBasket, basketMembers, queueImageForMontage, togglePlayQueue, playQueueMembers, collections, deleteMembershipNote, tagEdits, userTagsOf, userTags } from '$lib/state.js';
+  import { favorites, stashed, toggleFavorite, setStashed, removeMedia, setSelection, addSelection, removeSelection, selectAnchor, setSelectMode, selectionMembers, sendToImagine, toggleBasket, basketMembers, queueImageForMontage, togglePlayQueue, playQueueMembers, collections, deleteMembershipNote, tagEdits, userTagsOf, userTags } from '$lib/state.js';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import PeekOverlay from './PeekOverlay.svelte';
 
@@ -16,7 +16,11 @@
     collection = null,
     onopen = () => {},
     ontoggleselect = () => {},
-    onremovefromcollection = () => {}
+    onremovefromcollection = () => {},
+    // Order a Shift-range walks. Defaults to this grid's items (the full LOADED list, so
+    // virtualized-away cards in between count too); a grouped layout passes its whole
+    // on-screen order so a range can cross families.
+    rangeItems = null
   } = $props();
 
   let width = $state(0);
@@ -66,14 +70,17 @@
 
   // Selection has three gestures, all funnelling through the same id-keyed store:
   //   • Mouse: press + drag to paint a run (the first card sets select vs. deselect);
-  //     Shift-click extends a range from the last-touched card.
+  //     Shift-click applies a range from the last plain-clicked card (adds it when that
+  //     anchor is selected, removes it when the anchor was just deselected); outside
+  //     select mode Shift-click enters select mode instead of opening the lightbox.
   //   • Touch/pen: tap toggles one card; long-press extends a range from the anchor
   //     (so phones get bulk selection without a drag, which would fight scrolling).
-  // `anchorId` is the last card the user singled out — the pivot for both ranges.
+  // `selectAnchor.id` (state.js) is the last card the user singled out — the pivot for both ranges.
   let painting = false;
   let paintOn = false;            // true = selecting, false = deselecting
   let clickSuppressedFor = null;  // id whose synthetic click must be ignored (already handled)
-  let anchorId = null;            // range pivot (last tapped/painted card)
+  // Range pivot (last plain-clicked/painted card) lives in state.js (selectAnchor) so all
+  // grids on the page share it.
 
   // Mouse drag past the viewport edge auto-scrolls and keeps painting (below).
   let lastPointer = { x: 0, y: 0 };
@@ -85,16 +92,38 @@
   let peek = $state(null);        // the held item while peeking
   let peekTimer = null;
 
-  function selectRange(fromId, toId) {
-    const a = items.findIndex((x) => x.id === fromId);
-    const b = items.findIndex((x) => x.id === toId);
-    if (a < 0 || b < 0) return;
-    const [lo, hi] = a <= b ? [a, b] : [b, a];
+  // Shift-range from the anchor to `toId`, in gallery order. The anchor's CURRENT state
+  // decides the direction: selected -> add the range (others untouched), deselected ->
+  // remove it. No (or unknown) anchor -> just select the card. Returns nothing; the
+  // anchor itself stays put so successive Shift+clicks pivot on the same card.
+  function shiftSelect(toId) {
+    const order = rangeItems || items;
+    const fromId = selectAnchor.id;
+    const a = fromId == null ? -1 : order.findIndex((x) => x.id === fromId);
+    const b = order.findIndex((x) => x.id === toId);
+    if (a < 0 || b < 0) {
+      setSelection(toId, true);
+      selectAnchor.id = toId;
+      return;
+    }
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    const ids = order.slice(lo, hi + 1).map((x) => x.id);
     // One batched store update (not per-item) so a big range is O(n), not O(n²).
-    addSelection(items.slice(lo, hi + 1).map((x) => x.id));
+    if (selectionMembers.has(fromId)) addSelection(ids);
+    else removeSelection(ids);
   }
 
   function paintDown(e, it) {
+    if (!selectMode && e.pointerType === 'mouse' && e.button === 0 && e.shiftKey) {
+      // Shift+click outside select mode starts selecting instead of opening the lightbox.
+      setSelectMode(true);
+      setSelection(it.id, true);
+      selectAnchor.id = it.id;
+      clickSuppressedFor = it.id;
+      e.preventDefault();         // no text selection / native drag
+      return;
+    }
     if (!selectMode) {
       // Arm the peek. 400ms beats Android's ~500ms native long-press menu.
       if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -114,15 +143,15 @@
     clickSuppressedFor = null;    // clear any stale flag from a press that ended elsewhere
     if (e.pointerType === 'mouse') {
       if (e.button !== 0) return;
-      if (e.shiftKey && anchorId != null) {       // range-extend, no paint
-        selectRange(anchorId, it.id);
+      if (e.shiftKey) {           // range from the anchor, no paint
+        shiftSelect(it.id);
         clickSuppressedFor = it.id;
         e.preventDefault();
         return;
       }
       paintOn = !selectionMembers.has(it.id);
       setSelection(it.id, paintOn);
-      anchorId = it.id;
+      selectAnchor.id = it.id;
       painting = true;
       lastPointer = { x: e.clientX, y: e.clientY };
       clickSuppressedFor = it.id;
@@ -136,8 +165,8 @@
       clearTimeout(longPressTimer);
       longPressTimer = setTimeout(() => {
         longPressTimer = null;
-        if (anchorId != null && anchorId !== it.id) selectRange(anchorId, it.id);
-        else { setSelection(it.id, true); anchorId = it.id; }
+        if (selectAnchor.id != null && selectAnchor.id !== it.id) shiftSelect(it.id);
+        else { setSelection(it.id, true); selectAnchor.id = it.id; }
         clickSuppressedFor = it.id;   // the click that follows must not toggle it back
         navigator.vibrate?.(15);
       }, 450);
@@ -146,24 +175,30 @@
   function paintEnter(it) {
     if (selectMode && painting) setSelection(it.id, paintOn);
   }
-  function cellClick(it) {
+  function cellClick(it, e) {
     const suppressed = clickSuppressedFor === it.id;
     clickSuppressedFor = null;
     if (suppressed) return;       // already handled on pointerdown / long-press / peek
+    if (e?.shiftKey) {            // keyboard Shift+Enter: same range rules, never the lightbox
+      if (!selectMode) { setSelectMode(true); setSelection(it.id, true); selectAnchor.id = it.id; return; }
+      shiftSelect(it.id);
+      return;
+    }
     if (!selectMode) { onopen(it, items); return; }
     ontoggleselect(it);           // touch/pen tap or keyboard activation
-    anchorId = it.id;
+    selectAnchor.id = it.id;
   }
   // The hover selection circle. Outside select mode it flips into select mode and
   // selects this card; inside it just toggles.
-  function selectCircle(it) {
+  function selectCircle(it, e) {
+    if (selectMode && e?.shiftKey) { shiftSelect(it.id); return; }
     if (selectMode) {
       setSelection(it.id, !selectionMembers.has(it.id));
     } else {
       setSelectMode(true);
       setSelection(it.id, true);
     }
-    anchorId = it.id;
+    selectAnchor.id = it.id;
   }
 
   // --- Edge auto-scroll while drag-painting (mouse) -------------------------
@@ -304,7 +339,7 @@
             onpointerdown={(e) => paintDown(e, it)}
             onpointerenter={() => paintEnter(it)}
             oncontextmenu={(e) => { if (peekTimer != null || peek) e.preventDefault(); }}
-            onclick={() => cellClick(it)}></button>
+            onclick={(e) => cellClick(it, e)}></button>
 
           <!-- Resolution / video / CC badges, bottom-right — clear of the top-right
                action cluster and the top-left selection circle, so they never collide
@@ -348,8 +383,8 @@
                    {sel ? 'bg-[var(--accent)] text-[var(--on-accent)]' : 'bg-[var(--selection-control-bg)] text-[var(--media-control-ink-muted)]'}
                    {selectMode ? '' : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100'}"
             aria-label={sel ? 'Deselect' : 'Select'} aria-pressed={sel}
-            onpointerdown={(e) => e.stopPropagation()}
-            onclick={(e) => { e.stopPropagation(); selectCircle(it); }}>{sel ? '✓' : ''}</button>
+            onpointerdown={(e) => { e.stopPropagation(); if (e.shiftKey) e.preventDefault(); }}
+            onclick={(e) => { e.stopPropagation(); selectCircle(it, e); }}>{sel ? '✓' : ''}</button>
 
           <!-- top-right hover actions: archive + favorite -->
           {#if !selectMode}

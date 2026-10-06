@@ -142,6 +142,9 @@
     families.sort((a, b) => b.videos.length - a.videos.length || a.label.localeCompare(b.label));
     return { families, ungrouped };
   });
+  // On-screen order across every family grid, then the ungrouped grid: the order a
+  // Shift-range walks, so one range can span families.
+  const screenOrder = $derived([...grouped.families.flatMap((f) => f.items), ...grouped.ungrouped]);
 
   // Merging is order-sensitive; the parent opens a reorder step so the family's clips
   // (which land here in the collection's sort order, newest-first) can be arranged before
@@ -214,7 +217,7 @@
         {#if mode === 'editorial'}
           <EditorialList items={fam.items} {onopen} {collection} {onremovefromcollection} />
         {:else}
-          <JustifiedGrid items={fam.items} {targetHeight} {gap} {selectMode} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
+          <JustifiedGrid items={fam.items} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
         {/if}
       </div>
     </section>
@@ -235,7 +238,7 @@
       {#if mode === 'editorial'}
         <EditorialList items={grouped.ungrouped} {onopen} {collection} {onremovefromcollection} />
       {:else}
-        <JustifiedGrid items={grouped.ungrouped} {targetHeight} {gap} {selectMode} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
+        <JustifiedGrid items={grouped.ungrouped} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
       {/if}
     </section>
   {/if}

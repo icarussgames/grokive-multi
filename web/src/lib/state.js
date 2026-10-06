@@ -465,9 +465,16 @@ export async function removeMedia(ids) {
 export const selectMode = writable(false);
 export const selection = writable([]); // ordered ids (selection order matters for export)
 
+// Shift-range pivot (Google Photos style), shared by every grid on the page so a range
+// can span the families of a grouped collection. Plain (non-shift) select/deselect clicks
+// move it; Shift+click applies the ANCHOR's current state to the whole range: selected
+// anchor -> range added, deselected anchor -> range removed. Plain object, not a store:
+// nothing renders from it.
+export const selectAnchor = { id: null };
+
 export function setSelectMode(on) {
   selectMode.set(on);
-  if (!on) selection.set([]);
+  if (!on) { selection.set([]); selectAnchor.id = null; }
 }
 export function toggleSelection(id) {
   selection.update((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -496,6 +503,13 @@ export function setSelection(id, on) {
 }
 export function clearSelection() {
   selection.set([]);
+  selectAnchor.id = null;
+}
+// Batched removal (one store update) — the deselect half of a Shift-range.
+export function removeSelection(ids) {
+  const drop = new Set((ids || []).map(String));
+  if (!drop.size) return;
+  selection.update((s) => s.filter((x) => !drop.has(x)));
 }
 
 // Fine-grained membership mirror of `selection`, kept in sync with the array above.
