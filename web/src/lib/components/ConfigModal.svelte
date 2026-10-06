@@ -64,6 +64,7 @@
   let envLocked = $state(false);
   let burn = $state(false);
   let autonomous = $state(false);
+  let grokCollections = $state(false);
   let showAutonomousInfo = $state(false);
   let llmProvider = $state('local');
   let llmUrl = $state('');
@@ -147,6 +148,7 @@
       envLocked = !!s.whisper_env_locked;
       burn = !!s.burn_subtitles;
       autonomous = !!s.autonomous_mode;
+      grokCollections = !!s.grok_collections_enabled;
       llmProvider = s.llm_provider || providerFromUrl(s.llm_server_url);
       llmUrl = s.llm_server_url || '';
       llmModel = s.llm_model || '';
@@ -402,7 +404,7 @@
 
   async function save() {
     msg = 'Saving…'; msgClass = '';
-    const body = { burn_subtitles: burn, autonomous_mode: autonomous };
+    const body = { burn_subtitles: burn, autonomous_mode: autonomous, grok_collections_enabled: grokCollections };
     if (!envLocked) body.whisper_server_url = whisper.trim();
     body.llm_provider = llmProvider;
     body.embed_provider = embedProvider;
@@ -965,6 +967,13 @@
           {#if showAutonomousInfo}
             <p class="mt-2 text-xs text-muted">After each Sync, automatically update the prompt index, import new prompts into your library, generate subtitles for any videos still missing them (when a subtitle endpoint is configured), and AI-tag the newly imported prompts (when an AI provider is configured). Existing prompts are never re-tagged. Progress shows in the Sync status pill.</p>
           {/if}
+          <label class="mt-3 flex cursor-pointer items-start gap-2 text-sm">
+            <input type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]" bind:checked={grokCollections} />
+            <span>
+              <span class="font-semibold">Tag Grok collections on Sync</span> <span class="text-xs text-muted">(experimental)</span>
+              <span class="block text-xs text-muted">Lists each account's grok.com collections during Sync and tags matching items <code class="rounded-sm bg-[var(--code-bg)] px-1">grok:&lt;name&gt;</code>. Off by default while the Grok request is being confirmed; a check refuses to save if Grok ignores the collection filter.</span>
+            </span>
+          </label>
         </section>
 
         <section class="mt-6">

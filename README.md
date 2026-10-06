@@ -57,9 +57,18 @@ cd grokive-multi
 - **Grok collections as tags.** The collections you make on grok.com/imagine/saved (e.g.
   *amh_kira_v4*, *moon tactics*) become read-only `grok:<name>` tags: their own
   **Grok collections** group in the left filter panel, a read-only row in the lightbox, and
-  filterable / searchable like any tag (combined with the account switch, date, etc.). Every
+  filterable / searchable like any tag (combined with the account switch, date, etc.).
+  **Experimental and off by default:** the request that lists a collection's posts isn't
+  confirmed yet (Grok has been seen ignoring the filter), so turn it on in Settings →
+  Automation → *Tag Grok collections on Sync* only once it works for you. When on, every
   Sync (also *Sync this account* and Deep sync) lists each account's collections after its
-  downloads and tags the matching library items — nothing is downloaded by this step, and
+  downloads and tags the matching library items. Before writing anything it checks that
+  Grok actually applied the collection filter: the same first page requested twice must
+  match, collections must not all return the same first page, and 3+ collections must not
+  all report the same post count. If any check fails it warns and keeps the previous tags.
+  The membership request (endpoint, body with `{collection_id}`, cursor field) lives in
+  `MEMBERSHIP_REQUEST` in `grokcollections.py` and can be overridden without a code change
+  by `grok_collections_request.json` in the data dir. Nothing is downloaded by this step, and
   it's a full refresh, so taking an item out of a collection on Grok removes the tag. The
   default *Liked* collection is skipped (it duplicates favorites). Stored per account in
   `grok_collections.json`; a failure is logged and never fails the sync. Run it by hand

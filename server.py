@@ -488,6 +488,7 @@ def _sync_worker(only: str | None = None, deep: bool = False) -> None:
         # A failing account is logged and skipped so the remaining accounts still
         # sync; the whole job then finishes as an error to surface the failure.
         failures = 0
+        collections_on = _grok_collections_enabled()
         if only is not None and not active:
             _log(f"account '{only}' no longer exists — nothing to download")
             failures += 1
@@ -513,9 +514,9 @@ def _sync_worker(only: str | None = None, deep: bool = False) -> None:
                 # its chain isn't on the post — it only exists in the conversation.
                 acct_rc = _run_step(f"conversations{tag}", [py, cli, "conversations", *acct_args,
                                                             *(["--deep"] if deep else [])])
-            if acct_rc == 0:
-                # Grok collections -> grok:<name> tags (no downloads). Best-effort: a
-                # failure here is logged but never fails the sync.
+            if acct_rc == 0 and collections_on:
+                # Grok collections -> grok:<name> tags (no downloads). Opt-in (Settings →
+                # Automation); best-effort: a failure is logged but never fails the sync.
                 _run_step(f"collections{tag}", [py, cli, "collections", *acct_args])
             if acct_rc != 0:
                 failures += 1
@@ -655,6 +656,13 @@ def _whisper_url() -> str:
 
 def _burn_enabled() -> bool:
     return bool(_load_settings().get("burn_subtitles"))
+
+
+def _grok_collections_enabled() -> bool:
+    """Opt-in (default OFF): run the Grok-collections tagging step during Sync. Off by
+    default until the membership request is confirmed against live Grok — the CLI
+    (`grokive.py collections`) still runs it on demand."""
+    return bool(_load_settings().get("grok_collections_enabled"))
 
 
 def _autonomous_enabled() -> bool:
@@ -1395,6 +1403,7 @@ def api_settings_get() -> Response:
         whisper_env_locked=bool(WHISPER_ENV),
         burn_subtitles=bool(settings.get("burn_subtitles")),
         autonomous_mode=bool(settings.get("autonomous_mode")),
+        grok_collections_enabled=bool(settings.get("grok_collections_enabled")),
         subtitle_font=str(settings.get("subtitle_font") or "system"),
         subtitle_size=_sub_size(settings.get("subtitle_size")),
         subtitle_color=_sub_color(settings.get("subtitle_color")),
@@ -1447,6 +1456,8 @@ def api_settings_post() -> Response:
         settings["burn_subtitles"] = bool(payload.get("burn_subtitles"))
     if "autonomous_mode" in payload:
         settings["autonomous_mode"] = bool(payload.get("autonomous_mode"))
+    if "grok_collections_enabled" in payload:
+        settings["grok_collections_enabled"] = bool(payload.get("grok_collections_enabled"))
     # Subtitle display style (player ::cue + burned-in export). Font is restricted
     # to the curated keys; size/colour/opacity are clamped to safe ranges.
     if "subtitle_font" in payload:
