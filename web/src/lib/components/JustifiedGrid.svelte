@@ -1,5 +1,6 @@
 <script>
   import { justify } from '$lib/justified.js';
+  import { groupItemsByWeek } from '$lib/weeks.js';
   import { favorites, stashed, toggleFavorite, setStashed, removeMedia, setSelection, addSelection, removeSelection, selectAnchor, setSelectMode, selectionMembers, sendToImagine, toggleBasket, basketMembers, queueImageForMontage, togglePlayQueue, playQueueMembers, collections, deleteMembershipNote, tagEdits, userTagsOf, userTags } from '$lib/state.js';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import PeekOverlay from './PeekOverlay.svelte';
@@ -20,7 +21,11 @@
     // Order a Shift-range walks. Defaults to this grid's items (the full LOADED list, so
     // virtualized-away cards in between count too); a grouped layout passes its whole
     // on-screen order so a range can cross families.
-    rangeItems = null
+    rangeItems = null,
+    // When true (Date panel: a month / last 30 / last 60), insert sticky week headers
+    // between justified rows. Newest week first when sortNewest; unknown dates last.
+    groupByWeek = false,
+    sortNewest = true
   } = $props();
 
   let width = $state(0);
@@ -28,38 +33,56 @@
   let scrollY = $state(typeof window !== 'undefined' ? window.scrollY || 0 : 0);
   let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight || 0 : 0);
   let gridTop = $state(0);
-  const rows = $derived(width ? justify(items, width, targetHeight, gap) : []);
   const colorOf = $derived(new Map(($userTags || []).map((t) => [t.name, t.color])));
-  const VIRTUAL_MIN_ROWS = 40;
+  // Flat render list: optional sticky week headers interleaved with justified rows so
+  // virtualization / content-visibility stay one scroll range (infinite scroll unchanged).
+  const WEEK_HEAD_H = 36;
+  const units = $derived.by(() => {
+    if (!width) return [];
+    const out = [];
+    if (groupByWeek) {
+      for (const g of groupItemsByWeek(items, { newestFirst: sortNewest })) {
+        out.push({ type: 'header', key: `w:${g.key}`, label: g.label, count: g.items.length, h: WEEK_HEAD_H });
+        for (const row of justify(g.items, width, targetHeight, gap)) {
+          out.push({ type: 'row', key: `r:${row.cells[0]?.item.id}`, row, h: (row.cells[0]?.h ?? targetHeight) + gap });
+        }
+      }
+      return out;
+    }
+    for (const row of justify(items, width, targetHeight, gap)) {
+      out.push({ type: 'row', key: `r:${row.cells[0]?.item.id}`, row, h: (row.cells[0]?.h ?? targetHeight) + gap });
+    }
+    return out;
+  });
+  const VIRTUAL_MIN_UNITS = 40;
   const VIRTUAL_OVERSCAN = 1200;
-  const rowOffsets = $derived.by(() => {
+  const unitOffsets = $derived.by(() => {
     let y = 0;
-    return rows.map((row) => {
+    return units.map((u) => {
       const offset = y;
-      y += (row.cells[0]?.h ?? targetHeight) + gap;
+      y += u.h;
       return offset;
     });
   });
-  const totalRowsHeight = $derived.by(() => {
-    if (!rows.length) return 0;
-    const last = rows[rows.length - 1];
-    return rowOffsets[rows.length - 1] + (last?.cells[0]?.h ?? targetHeight) + gap;
+  const totalUnitsHeight = $derived.by(() => {
+    if (!units.length) return 0;
+    return unitOffsets[units.length - 1] + units[units.length - 1].h;
   });
-  const virtualizationActive = $derived(virtualize && rows.length >= VIRTUAL_MIN_ROWS && viewportHeight > 0);
+  const virtualizationActive = $derived(virtualize && units.length >= VIRTUAL_MIN_UNITS && viewportHeight > 0);
   const virtualSlice = $derived.by(() => {
-    if (!virtualizationActive) return { start: 0, end: rows.length, before: 0, after: 0 };
+    if (!virtualizationActive) return { start: 0, end: units.length, before: 0, after: 0 };
     const visibleTop = Math.max(0, scrollY - gridTop - VIRTUAL_OVERSCAN);
     const visibleBottom = Math.max(visibleTop, scrollY - gridTop + viewportHeight + VIRTUAL_OVERSCAN);
     let start = 0;
-    while (start < rows.length && rowOffsets[start] + (rows[start].cells[0]?.h ?? targetHeight) + gap < visibleTop) start += 1;
+    while (start < units.length && unitOffsets[start] + units[start].h < visibleTop) start += 1;
     let end = start;
-    while (end < rows.length && rowOffsets[end] < visibleBottom) end += 1;
-    end = Math.min(rows.length, Math.max(end, start + 1));
-    const before = rowOffsets[start] ?? 0;
-    const after = Math.max(0, totalRowsHeight - (rowOffsets[end] ?? totalRowsHeight));
+    while (end < units.length && unitOffsets[end] < visibleBottom) end += 1;
+    end = Math.min(units.length, Math.max(end, start + 1));
+    const before = unitOffsets[start] ?? 0;
+    const after = Math.max(0, totalUnitsHeight - (unitOffsets[end] ?? totalUnitsHeight));
     return { start, end, before, after };
   });
-  const visibleRows = $derived(virtualizationActive ? rows.slice(virtualSlice.start, virtualSlice.end) : rows);
+  const visibleUnits = $derived(virtualizationActive ? units.slice(virtualSlice.start, virtualSlice.end) : units);
   let confirming = $state(null); // item pending delete confirmation
   // Only offer "remove instead" for actual members: grouped view can surface lineage
   // items (a family's base still) that were never added to the open collection.
@@ -284,7 +307,7 @@
 
   $effect(() => {
     width;
-    rows.length;
+    units.length;
     gridEl;
     scheduleViewportUpdate();
   });
@@ -298,7 +321,17 @@
   {#if virtualizationActive && virtualSlice.before > 0}
     <div aria-hidden="true" style="height:{virtualSlice.before}px"></div>
   {/if}
-  {#each visibleRows as row (row.cells[0]?.item.id)}
+  {#each visibleUnits as unit (unit.key)}
+    {#if unit.type === 'header'}
+      <!-- Sticky under the dual top bar (--topbar-h). z-20 sits below the top bar (z-40)
+           and above cards so the week's label stays readable while its rows scroll. -->
+      <div class="week-head sticky z-20 -mx-1 mb-1.5 flex items-baseline justify-between gap-3 border-b border-line bg-[var(--bg)]/95 px-1 py-1.5 backdrop-blur-sm"
+        style="top: var(--topbar-h, 56px)" role="heading" aria-level="2">
+        <span class="text-sm font-bold text-ink">{unit.label}</span>
+        <span class="text-xs font-semibold text-muted">{unit.count.toLocaleString()}</span>
+      </div>
+    {:else}
+    {@const row = unit.row}
     <!-- content-visibility:auto (see .grid-row) lets the browser skip painting rows
          outside the viewport. When virtualize is enabled for large views, only the
          nearby rows are mounted and spacer blocks preserve the original scroll range. -->
@@ -441,6 +474,7 @@
         </div>
       {/each}
     </div>
+    {/if}
   {/each}
   {#if virtualizationActive && virtualSlice.after > 0}
     <div aria-hidden="true" style="height:{virtualSlice.after}px"></div>

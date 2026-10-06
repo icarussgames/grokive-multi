@@ -24,7 +24,9 @@
     onexport = () => {},
     onmontage = () => {},
     onplay = () => {},
-    onremovefromcollection = () => {}
+    onremovefromcollection = () => {},
+    groupByWeek = false,
+    sortNewest = true
   } = $props();
 
   const MAX_DEPTH = 12; // lineage-walk guard against a pathological parent chain
@@ -217,7 +219,7 @@
         {#if mode === 'editorial'}
           <EditorialList items={fam.items} {onopen} {collection} {onremovefromcollection} />
         {:else}
-          <JustifiedGrid items={fam.items} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
+          <JustifiedGrid items={fam.items} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
         {/if}
       </div>
     </section>
@@ -238,7 +240,7 @@
       {#if mode === 'editorial'}
         <EditorialList items={grouped.ungrouped} {onopen} {collection} {onremovefromcollection} />
       {:else}
-        <JustifiedGrid items={grouped.ungrouped} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
+        <JustifiedGrid items={grouped.ungrouped} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {onopen} {ontoggleselect} {collection} {onremovefromcollection} />
       {/if}
     </section>
   {/if}

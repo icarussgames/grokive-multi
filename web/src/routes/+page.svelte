@@ -5,6 +5,7 @@
   import { trapFocus } from '$lib/focusTrap.js';
   import { toast } from '$lib/toast.js';
   import { fetchMedia, fetchFacets, fetchLibrary, mediaByIds, renameCanvas, deleteCanvas } from '$lib/api.js';
+  import { shouldGroupByWeek } from '$lib/weeks.js';
   import {
     filters, mode, favorites, stashed, deleted, applyLibrary,
     selectMode, setSelectMode, selection, toggleSelection, clearSelection,
@@ -164,7 +165,10 @@
     $filters.mediaType !== 'all' ||
     $filters.period !== 'all'
   ));
-  const currentGridItems = $derived(activeCollection ? collectionItems.filter((it) => !$deleted.has(it.id)) : displayItems);
+  // Week section headers under a month / last-30 / last-60 date filter (not All time).
+  const weekGrouping = $derived(shouldGroupByWeek($filters.period));
+  const sortNewest = $derived($filters.sort !== 'old');
+    const currentGridItems = $derived(activeCollection ? collectionItems.filter((it) => !$deleted.has(it.id)) : displayItems);
   const selectableIds = $derived(currentGridItems.map((it) => it.id));
   const byId = $derived(new Map([...items, ...collectionItems].map((it) => [it.id, it])));
   const videoSelection = $derived($selection.filter((id) => byId.get(id)?.media_type === 'video'));
@@ -1022,6 +1026,7 @@
       {:else if groupByBase}
         <CollectionGroups items={currentGridItems} mode={$mode} {targetHeight} {gap}
           selectMode={$selectMode} loaded={collectionItems.length} total={collectionTotal}
+          groupByWeek={weekGrouping} {sortNewest}
           collection={activeCollection} onremovefromcollection={(id) => removeIdsFromActiveCollection([id])}
           onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)}
           onplay={(videos, title) => playResolved(videos, title)}
@@ -1034,6 +1039,7 @@
         <JustifiedGrid items={currentGridItems} {targetHeight} {gap}
           virtualize={currentGridItems.length >= 300}
           selectMode={$selectMode}
+          groupByWeek={weekGrouping} {sortNewest}
           collection={activeCollection} onremovefromcollection={(id) => removeIdsFromActiveCollection([id])}
           onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)} />
       {/if}
@@ -1089,6 +1095,7 @@
       {:else}
         <JustifiedGrid items={displayItems} {targetHeight} {gap}
           selectMode={$selectMode}
+          groupByWeek={weekGrouping} {sortNewest}
           onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)} />
       {/if}
 
@@ -1217,6 +1224,7 @@
       {:else}
         <JustifiedGrid items={displayItems} {targetHeight} {gap}
           selectMode={$selectMode}
+          groupByWeek={weekGrouping} {sortNewest}
           onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)} />
       {/if}
 

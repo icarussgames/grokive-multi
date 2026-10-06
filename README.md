@@ -104,7 +104,9 @@ cd grokive-multi
   switch, tags, Grok collections, models, search, sort), and the active range shows as a
   removable chip above the grid. Dates are Grok's creation time (`created_at`); day and
   month boundaries follow your **browser's local time** (the Display popover's periods
-  now do too, and gained *Last 60 days*). API: `period=last30|last60|m:YYYY-MM` plus
+  now do too, and gained *Last 60 days*). Under a month / last-30 / last-60 filter the
+  gallery adds **sticky week headers** (Mon–Sun local weeks, newest first) so a busy
+  month is easier to scan; All time stays flat. API: `period=last30|last60|m:YYYY-MM` plus
   `tz_offset=<minutes east of UTC>` on `/api/media` and `/api/facets` (which returns
   `months`).
 
