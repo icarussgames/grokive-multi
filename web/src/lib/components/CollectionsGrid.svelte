@@ -22,7 +22,7 @@
 
 <script>
   import { tick } from 'svelte';
-  import { collections, collectionGroups, removeCollection, updateCollection, setGroupCover, setCollectionsGroup, renameCollectionGroup, loadCollections, requestGalleryReload } from '$lib/state.js';
+  import { collections, collectionGroups, removeCollection, updateCollection, setGroupCover, setCollectionsGroup, nestCollections, renameCollectionGroup, loadCollections, requestGalleryReload } from '$lib/state.js';
   import { relockCollection, relockAllCollections, relockGroup } from '$lib/api.js';
   import { toast } from '$lib/toast.js';
   import ConfirmDialog from './ConfirmDialog.svelte';
@@ -428,8 +428,22 @@
   let selecting = $state(false);
   let picked = $state(new Set());
   let movePrompt = $state(null); // { name } -> move-to-group picker
+  let nestPrompt = $state(false); // pick a same-group parent to nest under
   const pickedList = $derived(collectionsList.filter((c) => picked.has(c.id)));
   const pickedGrouped = $derived(pickedList.filter((c) => String(c.group || '').trim()).length);
+  // Same-group root collections that can accept the selection as nested children.
+  // Mixed groups → no candidates (a nest parent is one collection in one group).
+  const nestParentChoices = $derived.by(() => {
+    if (!pickedList.length) return [];
+    const pickedIds = new Set(pickedList.map((c) => String(c.id)));
+    const keys = new Set(pickedList.map((c) => groupKey(c.group)));
+    if (keys.size !== 1) return [];
+    const gKey = [...keys][0];
+    return collectionsList
+      .filter((c) => !c.parent_id && !isSealed(c) && !pickedIds.has(String(c.id)) && groupKey(c.group) === gKey)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  });
+  const pickedHaveChildren = $derived(pickedList.some((c) => (childCountOf.get(c.id) || 0) > 0));
   function toggleSelecting() {
     selecting = !selecting;
     picked = new Set();
@@ -448,6 +462,7 @@
   }
   function finishSelection(message) {
     movePrompt = null;
+    nestPrompt = false;
     picked = new Set();
     selecting = false;
     toast(message, { type: 'success' });
@@ -468,6 +483,26 @@
   function removePickedFromGroup() {
     const moved = setCollectionsGroup(pickedList.map((c) => c.id), '');
     finishSelection(`Took ${moved} collection${moved === 1 ? '' : 's'} out of ${moved === 1 ? 'its group' : 'their groups'}`);
+  }
+  function openNestPrompt() {
+    if (!pickedList.length || !nestParentChoices.length) return;
+    if (pickedHaveChildren) {
+      toast("Move or delete each collection's sub-collections first — nesting only goes one level deep", { type: "error" });
+      return;
+    }
+    nestPrompt = true;
+  }
+  function confirmNest(parent) {
+    if (!parent || !pickedList.length) return;
+    const { nested, skipped, error } = nestCollections(pickedList.map((c) => c.id), parent.id);
+    nestPrompt = false;
+    if (error) { toast(error, { type: 'error' }); return; }
+    if (!nested) {
+      toast(skipped ? 'Those collections already have sub-collections or are nested' : 'Nothing to nest', { type: 'error' });
+      return;
+    }
+    const extra = skipped ? ` (${skipped} skipped)` : '';
+    finishSelection(`Nested ${nested} collection${nested === 1 ? '' : 's'} under “${parent.name}”${extra}`);
   }
 
   // --- Group actions (inside a group): rename, or ungroup back onto the landing. Blocked while
@@ -699,6 +734,11 @@
       <div class="ml-auto flex flex-wrap items-center gap-2">
         <button type="button" onclick={openMovePrompt} disabled={!pickedList.length}
           class="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-bold text-[var(--on-accent)] transition hover:brightness-110 disabled:opacity-40">Move to group…</button>
+        <button type="button" onclick={openNestPrompt} disabled={!pickedList.length || !nestParentChoices.length}
+          title={nestParentChoices.length
+            ? (pickedHaveChildren ? "Selected collections with sub-collections can't be nested (one level only)" : "Nest selected collections under another collection in this group")
+            : 'Pick collections that share a group (or are all ungrouped) — then choose a sibling as parent'}
+          class="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold transition enabled:hover:border-[var(--accent)] disabled:opacity-40">Nest under…</button>
         <button type="button" onclick={removePickedFromGroup} disabled={!pickedGrouped}
           title={pickedGrouped ? 'Put the selected collections back on the Library page' : 'None of the selected collections are in a group'}
           class="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold transition enabled:hover:border-[var(--accent)] disabled:opacity-40">Remove from group</button>
@@ -916,6 +956,37 @@
       <Button variant="secondary" size="lg" class="flex-1" onclick={() => (groupPrompt = null)}>Cancel</Button>
       <Button variant="primary" size="lg" class="flex-1" disabled={!groupPrompt.name.trim()} onclick={confirmGroupPrompt}>Create group</Button>
     </div>
+  </Modal>
+{/if}
+
+{#if nestPrompt}
+  <!-- Select mode → Nest under a same-group sibling (reuses parent_id / one-level nest rules). -->
+  <Modal onclose={() => (nestPrompt = false)} ariaLabel="Nest under a collection" z="z-[70]" panelClass="panel flex max-h-[80dvh] w-full max-w-sm flex-col rounded-2xl p-6">
+    <h2 class="mb-1 text-lg font-bold">Nest {pickedList.length} collection{pickedList.length === 1 ? '' : 's'} under…</h2>
+    <p class="mb-3 text-sm leading-relaxed text-muted">Choose a parent in the same group. Nested collections leave the group grid and show as sub-collections inside the parent (one level only).</p>
+    {#if nestParentChoices.length}
+      <ul class="mb-4 min-h-0 flex-1 space-y-1 overflow-y-auto">
+        {#each nestParentChoices as c (c.id)}
+          <li>
+            <button type="button" onclick={() => confirmNest(c)}
+              class="flex w-full items-center gap-3 rounded-lg border border-line px-3 py-2 text-left text-sm font-semibold transition hover:border-[var(--accent)]">
+              {#if c.cover}
+                <img src={c.cover} alt="" class="h-10 w-14 shrink-0 rounded-sm object-cover" />
+              {:else}
+                <span class="h-10 w-14 shrink-0 rounded-sm bg-[var(--media-placeholder)]"></span>
+              {/if}
+              <span class="min-w-0 flex-1">
+                <span class="block truncate">{c.name}</span>
+                <span class="block text-xs font-normal text-muted">{c.item_count ?? c.ids?.length ?? 0} items{#if childCountOf.get(c.id)} · {childCountOf.get(c.id)} nested{/if}</span>
+              </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="mb-4 text-sm text-muted">No valid parent in this group.</p>
+    {/if}
+    <Button variant="secondary" size="lg" class="w-full" onclick={() => (nestPrompt = false)}>Cancel</Button>
   </Modal>
 {/if}
 

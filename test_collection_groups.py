@@ -264,3 +264,28 @@ if __name__ == "__main__":
     test_group_cover_pin_lives_only_in_its_group()
     test_sub_collection_cover_pin()
     print("all passed")
+
+
+def test_bulk_post_nests_same_group_roots_under_a_sibling():
+    """Organize → Nest under… writes parent_id; children lose their group (one level)."""
+    _write_fixture()
+    path = server.COLLECTIONS_FILE
+    data = json.loads(path.read_text())
+    for row in data:
+        if row["id"] in ("root", "duo", "other"):
+            row["group"] = "Duos"
+            row.pop("parent_id", None)
+    path.write_text(json.dumps(data))
+    c = _client()
+    by = {x["id"]: x for x in c.get("/api/collections").json["collections"]}
+    assert by["duo"].get("group") == "Duos" and not by["duo"].get("parent_id")
+    full = json.loads(path.read_text())
+    for row in full:
+        if row["id"] in ("duo", "other"):
+            row["parent_id"] = "root"
+            row.pop("group", None)
+    assert c.post("/api/collections", json={"collections": full}).status_code == 200
+    stored = {x["id"]: x for x in json.loads(path.read_text())}
+    assert stored["duo"]["parent_id"] == "root" and "group" not in stored["duo"]
+    assert stored["other"]["parent_id"] == "root" and "group" not in stored["other"]
+    assert stored["root"].get("group") == "Duos" and not stored["root"].get("parent_id")

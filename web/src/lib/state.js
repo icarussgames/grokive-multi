@@ -836,6 +836,42 @@ export function setSubCollectionCover(parentId, childId) {
 // page's select mode. Sub-collections never carry a group (they live inside their parent), so
 // they're skipped; a cover pin doesn't follow a collection into another group. No updated_at
 // bump: organizing isn't a content change, so it mustn't reshuffle "Recently updated".
+// Nest one or more root collections under another root (one level only — same rules as
+// the server's `_normalize_collection_parents`). Children lose their group; collections
+// that already have sub-collections are skipped (nesting them would orphan those kids).
+// Returns `{ nested, skipped, error }`.
+export function nestCollections(childIds, parentId) {
+  const want = new Set((childIds || []).map(String).filter(Boolean));
+  const pid = String(parentId || '');
+  if (!want.size || !pid || want.has(pid)) return { nested: 0, skipped: 0, error: 'Pick a different parent collection' };
+  let nested = 0;
+  let skipped = 0;
+  let error = '';
+  const stamp = today();
+  collections.update((list) => {
+    const parent = list.find((c) => String(c.id) === pid);
+    if (!parent) { error = 'Parent collection not found'; return list; }
+    if (parent.parent_id) { error = 'Can only nest under a top-level collection'; return list; }
+    if (parent.locked && !parent.unlocked) { error = 'Unlock the parent collection first'; return list; }
+    const hasKids = new Set(
+      list.filter((c) => c.parent_id).map((c) => String(c.parent_id))
+    );
+    const next = list.map((coll) => {
+      const id = String(coll.id);
+      if (!want.has(id)) return coll;
+      if (coll.parent_id || hasKids.has(id)) { skipped += 1; return coll; }
+      nested += 1;
+      const out = { ...coll, parent_id: pid, updated_at: stamp };
+      delete out.group;
+      delete out.group_cover_at;
+      return out;
+    });
+    return nested ? touchParents(next, [pid, ...want], stamp) : next;
+  });
+  if (nested) persistCollections();
+  return { nested, skipped, error };
+}
+
 export function setCollectionsGroup(ids, group) {
   const want = new Set((ids || []).map(String));
   const name = String(group || '').trim().slice(0, 60);
