@@ -1038,7 +1038,7 @@
       {:else if groupByBase}
         <CollectionGroups items={currentGridItems} mode={$mode} {targetHeight} {gap}
           selectMode={$selectMode} loaded={collectionItems.length} total={collectionTotal}
-          groupByWeek={weekGrouping} {sortNewest}
+          groupByWeek={weekGrouping} {sortNewest} weekScope={$filters.period}
           collection={activeCollection} onremovefromcollection={(id) => removeIdsFromActiveCollection([id])}
           onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)}
           onarchiveto={openArchiveToCollection}
@@ -1052,7 +1052,7 @@
         <JustifiedGrid items={currentGridItems} {targetHeight} {gap}
           virtualize={currentGridItems.length >= 300}
           selectMode={$selectMode}
-          groupByWeek={weekGrouping} {sortNewest}
+          groupByWeek={weekGrouping} {sortNewest} weekScope={$filters.period}
           collection={activeCollection} onremovefromcollection={(id) => removeIdsFromActiveCollection([id])}
           onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)}
           onarchiveto={openArchiveToCollection} />
@@ -1109,7 +1109,7 @@
       {:else}
         <JustifiedGrid items={displayItems} {targetHeight} {gap}
           selectMode={$selectMode}
-          groupByWeek={weekGrouping} {sortNewest}
+          groupByWeek={weekGrouping} {sortNewest} weekScope={$filters.period}
           onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)}
           onarchiveto={openArchiveToCollection} />
       {/if}
@@ -1239,7 +1239,7 @@
       {:else}
         <JustifiedGrid items={displayItems} {targetHeight} {gap}
           selectMode={$selectMode}
-          groupByWeek={weekGrouping} {sortNewest}
+          groupByWeek={weekGrouping} {sortNewest} weekScope={$filters.period}
           onopen={openLightbox} ontoggleselect={(it) => toggleSelection(it.id)}
           onarchiveto={openArchiveToCollection} />
       {/if}

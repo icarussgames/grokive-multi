@@ -27,7 +27,8 @@
     onremovefromcollection = () => {},
     onarchiveto = null,
     groupByWeek = false,
-    sortNewest = true
+    sortNewest = true,
+    weekScope = 'all'
   } = $props();
 
   const MAX_DEPTH = 12; // lineage-walk guard against a pathological parent chain
@@ -220,7 +221,7 @@
         {#if mode === 'editorial'}
           <EditorialList items={fam.items} {onopen} {collection} {onremovefromcollection} />
         {:else}
-          <JustifiedGrid items={fam.items} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {onopen} {ontoggleselect} {onarchiveto} {collection} {onremovefromcollection} />
+          <JustifiedGrid items={fam.items} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {weekScope} {onopen} {ontoggleselect} {onarchiveto} {collection} {onremovefromcollection} />
         {/if}
       </div>
     </section>
@@ -241,7 +242,7 @@
       {#if mode === 'editorial'}
         <EditorialList items={grouped.ungrouped} {onopen} {collection} {onremovefromcollection} />
       {:else}
-        <JustifiedGrid items={grouped.ungrouped} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {onopen} {ontoggleselect} {onarchiveto} {collection} {onremovefromcollection} />
+        <JustifiedGrid items={grouped.ungrouped} rangeItems={screenOrder} {targetHeight} {gap} {selectMode} groupByWeek={groupByWeek} {sortNewest} {weekScope} {onopen} {ontoggleselect} {onarchiveto} {collection} {onremovefromcollection} />
       {/if}
     </section>
   {/if}

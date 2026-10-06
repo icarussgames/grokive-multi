@@ -82,3 +82,33 @@ export function shouldGroupByWeek(period) {
   const p = String(period || 'all');
   return p === 'last30' || p === 'last60' || p.startsWith('m:');
 }
+
+const COLLAPSED_STORAGE = 'ga.collapsedWeeks';
+
+/** `{ [period]: string[] }` of collapsed week keys (Monday YYYY-MM-DD / "unknown"). */
+function readCollapsedMap() {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_STORAGE) || '{}');
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadCollapsedWeeks(period) {
+  const list = readCollapsedMap()[String(period || 'all')];
+  return new Set(Array.isArray(list) ? list.map(String) : []);
+}
+
+export function saveCollapsedWeeks(period, keys) {
+  if (typeof localStorage === 'undefined') return;
+  const map = readCollapsedMap();
+  const scope = String(period || 'all');
+  const list = [...(keys instanceof Set ? keys : keys || [])].map(String);
+  if (list.length) map[scope] = list;
+  else delete map[scope];
+  try {
+    localStorage.setItem(COLLAPSED_STORAGE, JSON.stringify(map));
+  } catch { /* quota / private mode */ }
+}

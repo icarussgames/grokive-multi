@@ -1,6 +1,6 @@
 <script>
   import { justify } from '$lib/justified.js';
-  import { groupItemsByWeek } from '$lib/weeks.js';
+  import { groupItemsByWeek, loadCollapsedWeeks, saveCollapsedWeeks } from '$lib/weeks.js';
   import { favorites, stashed, toggleFavorite, setStashed, removeMedia, setSelection, addSelection, removeSelection, selectAnchor, setSelectMode, selectionMembers, sendToImagine, toggleBasket, basketMembers, queueImageForMontage, togglePlayQueue, playQueueMembers, collections, deleteMembershipNote, tagEdits, userTagsOf, userTags } from '$lib/state.js';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import PeekOverlay from './PeekOverlay.svelte';
@@ -26,7 +26,10 @@
     // When true (Date panel: a month / last 30 / last 60), insert sticky week headers
     // between justified rows. Newest week first when sortNewest; unknown dates last.
     groupByWeek = false,
-    sortNewest = true
+    sortNewest = true,
+    // Date-filter id (`m:2026-09` / last30 / …) — scopes which collapsed weeks are
+    // remembered in localStorage so each filter keeps its own expand/collapse set.
+    weekScope = 'all'
   } = $props();
 
   let width = $state(0);
@@ -35,15 +38,53 @@
   let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight || 0 : 0);
   let gridTop = $state(0);
   const colorOf = $derived(new Map(($userTags || []).map((t) => [t.name, t.color])));
+  // Collapsed week keys for this date filter (localStorage). Rows stay in `items` for
+  // Shift-range / selection; only the visual units omit a collapsed week's thumbnails.
+  let collapsedWeeks = $state(new Set());
+  $effect(() => {
+    if (!groupByWeek) { collapsedWeeks = new Set(); return; }
+    collapsedWeeks = loadCollapsedWeeks(weekScope);
+  });
+  const weekGroups = $derived(
+    groupByWeek ? groupItemsByWeek(items, { newestFirst: sortNewest }) : []
+  );
+  const weekKeys = $derived(weekGroups.map((g) => g.key));
+  const allCollapsed = $derived(weekKeys.length > 0 && weekKeys.every((k) => collapsedWeeks.has(k)));
+  const anyCollapsed = $derived(weekKeys.some((k) => collapsedWeeks.has(k)));
+
+  function persistCollapsed(next) {
+    collapsedWeeks = next;
+    saveCollapsedWeeks(weekScope, next);
+  }
+  function toggleWeek(key) {
+    const next = new Set(collapsedWeeks);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    persistCollapsed(next);
+  }
+  function collapseAllWeeks() {
+    persistCollapsed(new Set(weekKeys));
+  }
+  function expandAllWeeks() {
+    persistCollapsed(new Set());
+  }
+
   // Flat render list: optional sticky week headers interleaved with justified rows so
   // virtualization / content-visibility stay one scroll range (infinite scroll unchanged).
-  const WEEK_HEAD_H = 36;
+  const WEEK_HEAD_H = 40;
   const units = $derived.by(() => {
     if (!width) return [];
     const out = [];
     if (groupByWeek) {
-      for (const g of groupItemsByWeek(items, { newestFirst: sortNewest })) {
-        out.push({ type: 'header', key: `w:${g.key}`, label: g.label, count: g.items.length, h: WEEK_HEAD_H });
+      // Read collapsedWeeks inside so collapsing reflows units / virtualization.
+      const closed = collapsedWeeks;
+      for (const g of weekGroups) {
+        const collapsed = closed.has(g.key);
+        out.push({
+          type: 'header', key: `w:${g.key}`, weekKey: g.key, label: g.label,
+          count: g.items.length, collapsed, h: WEEK_HEAD_H
+        });
+        if (collapsed) continue;
         for (const row of justify(g.items, width, targetHeight, gap)) {
           out.push({ type: 'row', key: `r:${row.cells[0]?.item.id}`, row, h: (row.cells[0]?.h ?? targetHeight) + gap });
         }
@@ -319,18 +360,35 @@
 <svelte:window onpointerup={onWinPointerUp} onpointercancel={onWinPointerUp} onpointermove={onWinPointerMove} onblur={onWinPointerUp} />
 
 <div class="w-full" bind:this={gridEl} bind:clientWidth={width} style="--g:{gap}px">
+  {#if groupByWeek && weekKeys.length}
+    <div class="mb-2 flex flex-wrap items-center gap-2 text-xs">
+      <span class="font-semibold text-muted">Weeks</span>
+      <button type="button" class="rounded-md border border-line px-2 py-1 font-semibold transition hover:border-[var(--accent)] disabled:opacity-40"
+        disabled={allCollapsed} onclick={collapseAllWeeks}>Collapse all</button>
+      <button type="button" class="rounded-md border border-line px-2 py-1 font-semibold transition hover:border-[var(--accent)] disabled:opacity-40"
+        disabled={!anyCollapsed} onclick={expandAllWeeks}>Expand all</button>
+    </div>
+  {/if}
   {#if virtualizationActive && virtualSlice.before > 0}
     <div aria-hidden="true" style="height:{virtualSlice.before}px"></div>
   {/if}
   {#each visibleUnits as unit (unit.key)}
     {#if unit.type === 'header'}
-      <!-- Sticky under the dual top bar (--topbar-h). z-20 sits below the top bar (z-40)
-           and above cards so the week's label stays readable while its rows scroll. -->
-      <div class="week-head sticky z-20 -mx-1 mb-1.5 flex items-baseline justify-between gap-3 border-b border-line bg-[var(--bg)]/95 px-1 py-1.5 backdrop-blur-sm"
-        style="top: var(--topbar-h, 56px)" role="heading" aria-level="2">
-        <span class="text-sm font-bold text-ink">{unit.label}</span>
-        <span class="text-xs font-semibold text-muted">{unit.count.toLocaleString()}</span>
-      </div>
+      <!-- Sticky under the dual top bar (--topbar-h). Click toggles collapse; chevron
+           shows state. z-20 sits below the top bar (z-40) and above cards. -->
+      <button type="button"
+        class="week-head sticky z-20 -mx-1 mb-1.5 flex w-[calc(100%+0.5rem)] items-center justify-between gap-3 border-b border-line bg-[var(--bg)]/95 px-1 py-1.5 text-left backdrop-blur-sm transition hover:bg-[var(--surface-2)]/80"
+        style="top: var(--topbar-h, 56px)"
+        aria-expanded={!unit.collapsed}
+        title={unit.collapsed ? 'Expand week' : 'Collapse week'}
+        onclick={() => toggleWeek(unit.weekKey)}>
+        <span class="flex min-w-0 items-center gap-1.5">
+          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 shrink-0 text-muted transition-transform {unit.collapsed ? '' : 'rotate-90'}"
+            fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+          <span class="truncate text-sm font-bold text-ink">{unit.label}</span>
+        </span>
+        <span class="shrink-0 text-xs font-semibold text-muted">{unit.count.toLocaleString()}{unit.collapsed ? ' · collapsed' : ''}</span>
+      </button>
     {:else}
     {@const row = unit.row}
     <!-- content-visibility:auto (see .grid-row) lets the browser skip painting rows
