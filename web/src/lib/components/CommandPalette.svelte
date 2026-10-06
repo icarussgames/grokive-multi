@@ -1,10 +1,10 @@
 <script>
-  // Ctrl/Cmd+K command palette: fuzzy jump-to-anything plus verb commands. Data comes
+  // Command palette (opened by the top-bar Search button): fuzzy jump-to-anything plus verb commands. Data comes
   // straight from the client stores, so opening costs nothing and sealed (locked,
   // not-unlocked) collections never appear — their identity is redacted server-side
   // and surfacing "Locked collection" rows here would only be noise.
-  import { tick } from 'svelte';
-  import { collections, playlists, setView } from '$lib/state.js';
+  import { tick, onDestroy } from 'svelte';
+  import { collections, playlists, setView, paletteRequest } from '$lib/state.js';
 
   let {
     onopencollection = () => {},
@@ -114,6 +114,14 @@
     inputEl?.focus();
   }
   function close() { open = false; }
+  // The top-bar Search button bumps paletteRequest; react synchronously (inside the click)
+  // so focusing the input still counts as user-initiated on touch browsers.
+  let _seenRequest = null;
+  const _unsubRequest = paletteRequest.subscribe((n) => {
+    if (_seenRequest !== null && n !== _seenRequest) show();
+    _seenRequest = n;
+  });
+  onDestroy(_unsubRequest);
   function run(r) {
     close();
     r.run();

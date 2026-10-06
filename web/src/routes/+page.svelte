@@ -1228,7 +1228,7 @@
     onclose={() => { lb = null; previewItemId = null; }} />
 {/if}
 
-<!-- Ctrl/Cmd+K jump-to-anything. Always mounted; renders nothing until invoked. -->
+<!-- Jump-to-anything palette (top-bar Search button). Always mounted; renders nothing until invoked. -->
 <CommandPalette
   onopencollection={(c) => enterCollection(c.id)}
   onplaycollection={(c, shuffle) => playCollection(c, null, { shuffle })}

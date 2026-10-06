@@ -131,6 +131,10 @@ export const accountCounts = writable([]); // facets.accounts for the current sc
 // Bumped when some other surface starts a server job (e.g. re-attribution) so the
 // status pill starts polling it.
 export const jobKick = writable(0);
+// Bumped by the top-bar Search button to open the command palette (no hotkey: Ctrl/Cmd
+// combos are left to the browser).
+export const paletteRequest = writable(0);
+export function openPalette() { paletteRequest.update((n) => n + 1); }
 export async function loadGrokAccounts() {
   let list = [];
   try { list = (await getAccounts()).accounts || []; } catch { return; }

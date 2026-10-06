@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { startSync, startSubtitles, syncStatus } from '$lib/api.js';
-  import { settings, loadSettings, jobKick, loadGrokAccounts } from '$lib/state.js';
+  import { settings, loadSettings, jobKick, loadGrokAccounts, openPalette } from '$lib/state.js';
   import { portal } from '$lib/portal.js';
   import { toast } from '$lib/toast.js';
   import { copyText } from '$lib/clipboard.js';
@@ -233,6 +233,9 @@
       <span aria-hidden="true" class="text-xs font-black tracking-tight text-[var(--accent)]">CC</span>
     </button>
   {/if}
+  <button type="button" class="grid h-9 w-9 place-items-center rounded-lg border border-line bg-[var(--surface-2)] text-base transition hover:border-[var(--accent)]" title="Search" aria-label="Search" aria-haspopup="dialog" onclick={openPalette}>
+    <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+  </button>
   <button type="button" class="grid h-9 w-9 place-items-center rounded-lg border border-line bg-[var(--surface-2)] text-base transition hover:border-[var(--accent)]" title="Stats" aria-label="Stats" onclick={() => (showStats = true)}>
     <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6" rx="0.5"/><rect x="12" y="7" width="3" height="10" rx="0.5"/><rect x="17" y="13" width="3" height="4" rx="0.5"/></svg>
   </button>
