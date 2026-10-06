@@ -77,9 +77,11 @@ cd grokive-multi
 
 ### Smaller changes
 
-- **Browser shortcuts work again.** The app no longer captures Ctrl/Cmd key combos, so
-  browser shortcuts such as **Ctrl+Shift+R** go through. The command palette, which used
-  Ctrl/Cmd+K, now opens from the top-bar **Search** (magnifier) button; Escape closes it.
+- **Browser shortcuts work again.** The app no longer captures Ctrl/Cmd/Alt combos, so
+  browser shortcuts such as **Ctrl+Shift+R** go through. The one exception is the optional
+  **Ctrl+K** (⌘K on Mac) that opens the command palette — on by default, exactly that combo
+  and nothing else, switchable per browser in **Settings → Keyboard → Ctrl+K opens Search**.
+  The top-bar **Search** (magnifier) button opens the palette either way; Escape closes it.
 - **Stats has its own top-bar button**, and **Settings (⚙) opens Config directly**; when a
   Whisper server is configured, **CC** (Generate subtitles) is its own button too.
 - **Docker:** the prebuilt image referenced below (`ghcr.io/starrlord/grokive`) is
@@ -150,7 +152,7 @@ cd grokive-multi
 - Show parent media when parent metadata is available.
 - Build **collections** for mixed images/videos, organize related collections into named **collection groups** (on desktop, just **drag one collection card onto another**), or make video **playlists** for back-to-back playback with fullscreen auto-advance and drag-to-reorder. Collections and playlists live together under a **Library** tab, whose landing opens with a **Recently active** row of featured cards and covers that **come alive on hover**.
 - **Import a folder** of your own videos/images straight into a new or existing collection — files are copied in with thumbnails and indexed alongside your synced media.
-- **Command palette:** fuzzy-jump to any collection, playlist, or view — or type `play`, `shuffle`, or `queue` plus a collection name to act on it directly. Open it with the **Search** (magnifier) button in the top bar — in this fork there's no Ctrl/Cmd+K shortcut, so browser shortcuts pass through.
+- **Command palette:** fuzzy-jump to any collection, playlist, or view — or type `play`, `shuffle`, or `queue` plus a collection name to act on it directly. Open it with the **Search** (magnifier) button in the top bar or **Ctrl/Cmd+K** (can be turned off in Settings → Keyboard; no other shortcut is captured).
 - **Play Queue:** a cross-library, reload-surviving video queue — add clips from a collection card, a grid card, or select mode, then play them back-to-back (in order or shuffled) or save the queue as a playlist.
 - **Export a playlist** (or an ad-hoc selection) as one merged MP4 — a reorder step lets you arrange (or shuffle) the clips first, an optional **cinematic intro** opens the video with a trailer-style title card built from your own clips, and the merge is a lossless stream-copy when clips match, otherwise a high-fidelity re-encode (audio always kept).
 - **Song Beat Montage:** pick videos + a song and the server cuts a beat-synced montage — motion peaks landed on the beat and cut density that follows the song's energy. Pick a **style** — Classic (punchy hard cuts), Cinematic (smarter analysis, beat-timed transitions, on-beat zoom punch), Moody (long held shots with a slow push-in, punctuated by beat bursts), or Music Video (maximum-energy sub-beat cutting, flashes, and a neon grade) — with optional GPU-accelerated rendering (NVENC when available, else CPU) and one-click **Add to Collection**. Gather clips into a cross-library **Montage basket** to build one montage from videos spread across collections and canvases, let **Auto-pick** choose clips for a song from your whole library, or switch to **Motion Match Cut** mode to splice clips where their motion flows across the cut (song optional).
@@ -368,7 +370,7 @@ Flask API (`/api/media`, `/api/facets`, …). Highlights:
 - **Views:** Recent, All Media, **Library**, Favorites, Archive, and Canvases tabs. The **Library** tab is the single home for both **Collections** and **Playlists** (switchable inside it). All Media intentionally shows everything that still exists on disk, independent of archive or collection membership.
 - **Workspaces:** beyond browsing, two top-bar tools — **✦ Prompt Studio** (compose prompts) and **✨ Grok Imagine** (generate images & video). See those sections below.
 - **Collections:** group mixed images and videos into named cards with covers, organize related collection cards into named **collection groups**, then drill into each collection with the normal gallery controls and scoped tag/resolution filters. The landing opens with a **Recently active** row of oversized featured cards (default sort, wide screens), hovering a card makes its cover **come alive** — a muted looping clip, or a slow drift across the mosaic — and group cards wear a stacked-deck edge so containers read differently from single collections. **Import a folder** of local files into a new or existing collection (per-file progress; imports are auto-archived so they don't crowd Recent), and toggle **Group** inside an open collection to cluster its clips into *families* by the base image each was generated from (lineage traced through `parent_id`) — each family ready to merge-export or turn into a montage in one click.
-- **Command palette:** the top-bar **Search** (magnifier) button opens a fuzzy jump-to-anything (no Ctrl/Cmd+K shortcut in this fork) — collections, playlists, and views — plus verb commands: type `play`, `shuffle`, or `queue` followed by a collection name to play it, play it shuffled, or add its videos to the Play Queue without leaving the keyboard.
+- **Command palette:** the top-bar **Search** (magnifier) button — or **Ctrl/Cmd+K**, toggleable in Settings → Keyboard — opens a fuzzy jump-to-anything — collections, playlists, and views — plus verb commands: type `play`, `shuffle`, or `queue` followed by a collection name to play it, play it shuffled, or add its videos to the Play Queue without leaving the keyboard.
 - **Play Queue:** a persistent, cross-library video queue, separate from any playlist — fill it from a collection card, a grid card's hover action, or select mode, reorder or shuffle it in its floating chip, play it back-to-back, or promote it into a saved playlist. It survives page reloads.
 - **Canvases:** browse canvas cards, drill into a canvas without leaving the Canvases tab, and use Back to return to the canvas grid.
 - **Justified photo grid** with infinite scroll and lazy thumbnails (*Grid* mode), or a

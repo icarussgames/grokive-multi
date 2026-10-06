@@ -1,10 +1,10 @@
 <script>
-  // Command palette (opened by the top-bar Search button): fuzzy jump-to-anything plus verb commands. Data comes
+  // Command palette (top-bar Search button, or Ctrl/Cmd+K when enabled in Settings): fuzzy jump-to-anything plus verb commands. Data comes
   // straight from the client stores, so opening costs nothing and sealed (locked,
   // not-unlocked) collections never appear — their identity is redacted server-side
   // and surfacing "Locked collection" rows here would only be noise.
   import { tick, onDestroy } from 'svelte';
-  import { collections, playlists, setView, paletteRequest } from '$lib/state.js';
+  import { collections, playlists, setView, paletteRequest, paletteHotkey, IS_MAC } from '$lib/state.js';
 
   let {
     onopencollection = () => {},
@@ -126,10 +126,27 @@
     close();
     r.run();
   }
+  // Exactly Ctrl+K (Cmd+K on Mac — where Ctrl+K is the text-field "delete to end of line")
+  // with no Shift/Alt, and only when the Settings toggle is on. Nothing else is claimed:
+  // the old handler's broader match is what swallowed Ctrl+Shift+R.
+  function isPaletteCombo(e) {
+    if (!$paletteHotkey || e.isComposing || e.repeat) return false;
+    if (e.shiftKey || e.altKey) return false;
+    // Written as plain early returns on purpose: the production minifier mangled the
+    // one-expression form `primary && (a || b || c)` into `(primary && a) || b || c`,
+    // which made a bare "k" keypress match.
+    const isK = e.key === 'k' || e.key === 'K' || e.code === 'KeyK';
+    if (!isK) return false;
+    if (IS_MAC) return e.metaKey === true && e.ctrlKey === false;
+    return e.ctrlKey === true && e.metaKey === false;
+  }
   function onWindowKey(e) {
-    // Don't claim Ctrl/Cmd combos. Ctrl+K used to open this palette and called
-    // preventDefault, which also swallowed browser shortcuts such as Ctrl+Shift+R.
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (isPaletteCombo(e)) {
+      e.preventDefault();
+      open ? close() : show();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return; // every other combo belongs to the browser
     if (open && e.key === 'Escape') {
       e.preventDefault();
       close();

@@ -135,6 +135,13 @@ export const jobKick = writable(0);
 // combos are left to the browser).
 export const paletteRequest = writable(0);
 export function openPalette() { paletteRequest.update((n) => n + 1); }
+// "Ctrl+K opens Search" (Cmd+K on Mac). A per-device keyboard preference, so it lives in
+// localStorage with theme/mode rather than in server settings. On by default; only that
+// exact combo is ever claimed — every other Ctrl/Cmd/Alt shortcut goes to the browser.
+export const paletteHotkey = writable(LS('ga.paletteHotkey', true) !== false);
+paletteHotkey.subscribe((v) => persist('ga.paletteHotkey', !!v));
+export const IS_MAC = typeof navigator !== 'undefined'
+  && /mac|iphone|ipad|ipod/i.test(navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || '');
 export async function loadGrokAccounts() {
   let list = [];
   try { list = (await getAccounts()).accounts || []; } catch { return; }

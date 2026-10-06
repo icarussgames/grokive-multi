@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { checkAccount, checkAllAccounts, syncAccount, getAccounts, createAccount, updateAccount, deleteAccount, getSettings, postSettings, fetchProviderModels, authStatus, logout, exportBackup, restoreBackup } from '$lib/api.js';
-  import { loadSettings, theme, setTheme, THEMES, mode, jobKick } from '$lib/state.js';
+  import { loadSettings, theme, setTheme, THEMES, mode, jobKick, paletteHotkey, IS_MAC } from '$lib/state.js';
   import { portal } from '$lib/portal.js';
   import { toast } from '$lib/toast.js';
   import { trapFocus } from '$lib/focusTrap.js';
@@ -915,6 +915,21 @@
                 {/each}
               </div>
             </div>
+          </div>
+        </section>
+
+        <!-- Keyboard: per-device (localStorage), live-applied like Appearance. -->
+        <section class="mt-6">
+          <div class="mb-2 text-xs font-bold uppercase tracking-wider text-muted">Keyboard</div>
+          <div class="flex items-center gap-3 rounded-xl border border-line px-3 py-2.5">
+            <span class="min-w-0 flex-1">
+              <span class="block text-sm font-semibold">{IS_MAC ? '⌘K' : 'Ctrl+K'} opens Search</span>
+              <span class="block text-xs text-muted">Other {IS_MAC ? '⌘' : 'Ctrl'} shortcuts (e.g. {IS_MAC ? '⌘⇧R' : 'Ctrl+Shift+R'}) always go to the browser.</span>
+            </span>
+            <button type="button" role="switch" aria-checked={$paletteHotkey} class="acct-switch shrink-0"
+              aria-label={`${IS_MAC ? 'Cmd+K' : 'Ctrl+K'} opens Search`} onclick={() => paletteHotkey.set(!$paletteHotkey)}>
+              <span class="acct-knob" aria-hidden="true"></span>
+            </button>
           </div>
         </section>
 
