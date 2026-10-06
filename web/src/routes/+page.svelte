@@ -816,7 +816,11 @@
   <!-- Studio is its own full-width workspace; the media-browsing sidebar (filters,
        playlists) doesn't apply there, so hide it for that view. -->
   {#if $filters.view !== 'studio' && $filters.view !== 'imagine' && !onCollectionsLanding}
-    <aside class="hidden w-80 shrink-0 overflow-y-auto border-r border-line lg:block" style="height: calc(100dvh - 56px)">
+    <!-- Sticky filter rail: the WINDOW scrolls the gallery (the infinite-scroll sentinel
+         observes the viewport), so the rail pins under the top bar (--topbar-h, measured in
+         TopBar) and scrolls on its own; overscroll-contain stops it chaining into the page. -->
+    <aside class="filter-rail sticky hidden w-80 shrink-0 self-start overflow-y-auto overscroll-contain border-r border-line lg:block"
+      style="top: var(--topbar-h, 56px); height: calc(100dvh - var(--topbar-h, 56px))">
       <Sidebar {facets} onbrowse={() => (showFilters = true)} onmanagetags={() => (showTagManager = true)} />
     </aside>
   {/if}

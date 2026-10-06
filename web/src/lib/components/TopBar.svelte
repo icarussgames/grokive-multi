@@ -6,6 +6,20 @@
   import Popover from './Popover.svelte';
   import QuotaBolts from './QuotaBolts.svelte';
 
+  // Publish the bar's live height as --topbar-h so the sticky filter rail (+page.svelte)
+  // sits right under it and fills the rest of the viewport. The bar wraps to two rows and
+  // grows with safe-area insets, so it's measured rather than hard-coded.
+  let headerEl = $state(null);
+  $effect(() => {
+    if (!headerEl || typeof ResizeObserver === 'undefined') return;
+    const root = document.documentElement;
+    const apply = () => root.style.setProperty('--topbar-h', `${Math.round(headerEl.getBoundingClientRect().height)}px`);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(headerEl);
+    return () => ro.disconnect();
+  });
+
   let { onrefresh = () => {}, onfilters = () => {}, onmenu = () => {}, onplay = () => {}, onmontage = () => {} } = $props();
 
   // A month picked in the sidebar's Date panel ('m:YYYY-MM') shows as its own option.
@@ -90,7 +104,7 @@
   const activeView = $derived(views.find((v) => v.id === $filters.view));
 </script>
 
-<header class="topbar glass sticky top-0 z-30 flex flex-col gap-2 px-4 py-2.5" style="padding-top: max(0.625rem, env(safe-area-inset-top))">
+<header bind:this={headerEl} class="topbar glass sticky top-0 z-30 flex flex-col gap-2 px-4 py-2.5" style="padding-top: max(0.625rem, env(safe-area-inset-top))">
   <!-- Tier 1 — identity · search · system. Calm row: who you are, find, and status/settings. -->
   <div class="flex flex-wrap items-center gap-2 sm:gap-3">
     <!-- Mobile/tablet menu: opens the filter drawer; desktop sidebar is always visible. -->

@@ -1078,6 +1078,10 @@ body::after {
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+/* Thin scrollbar for the sticky filter rail (+page.svelte). */
+.filter-rail { scrollbar-width: thin; scrollbar-gutter: stable; }
+.filter-rail::-webkit-scrollbar { width: 6px; }
+.filter-rail::-webkit-scrollbar-track { background: transparent; }
 
 /* Subtitle (WebVTT) cue baseline — the Subtitle display panel overrides this with
    a literal rule injected into <head> from the saved settings (see +layout.svelte
