@@ -7,7 +7,6 @@
   import { copyText } from '$lib/clipboard.js';
   import ConfigModal from './ConfigModal.svelte';
   import StatsModal from './StatsModal.svelte';
-  import Popover from './Popover.svelte';
 
   let { onrefresh = () => {} } = $props();
 
@@ -228,31 +227,18 @@
   <span class="mx-0.5 hidden h-6 w-px self-center bg-line md:block" aria-hidden="true"></span>
   <button class="cta-primary rounded-lg border border-transparent bg-[var(--accent)] px-3 py-1.5 text-sm font-semibold text-[var(--on-accent)] transition enabled:hover:brightness-110 enabled:active:brightness-95 disabled:opacity-50" onclick={doSync} disabled={status.running}
     title="Sync new media from every active account · Shift+click for a deep sync (recheck every conversation, ignoring last-modified times — slower)">Sync</button>
-  <Popover align="right" ariaLabel="Settings" title="Settings"
-    triggerClass="grid h-9 w-9 place-items-center rounded-lg border border-line bg-[var(--surface-2)] text-base transition hover:border-[var(--accent)]">
-    {#snippet trigger()}<span aria-hidden="true">⚙</span>{/snippet}
-    {#snippet children(close)}
-      <div class="w-56 max-w-[calc(100vw-1rem)] rounded-card border border-line bg-[var(--surface-solid)] p-1.5 shadow-[0_18px_44px_-14px_rgba(0,0,0,0.6)]">
-        <button type="button" class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-semibold transition hover:bg-[var(--surface-2)]"
-          onclick={() => { close(); showStats = true; }}>
-          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6" rx="0.5"/><rect x="12" y="7" width="3" height="10" rx="0.5"/><rect x="17" y="13" width="3" height="4" rx="0.5"/></svg>
-          Stats
-        </button>
-        {#if $settings.whisper_configured}
-          <button type="button" class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-semibold transition hover:bg-[var(--surface-2)] disabled:opacity-50"
-            disabled={status.running} onclick={() => { close(); doSubs(); }}>
-            <span aria-hidden="true" class="text-xs font-black tracking-tight text-[var(--accent)]">CC</span>
-            Generate subtitles
-          </button>
-        {/if}
-        <button type="button" class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-semibold transition hover:bg-[var(--surface-2)]"
-          onclick={() => { close(); showConfig = true; }}>
-          <span aria-hidden="true">⚙</span>
-          Configuration…
-        </button>
-      </div>
-    {/snippet}
-  </Popover>
+  {#if $settings.whisper_configured}
+    <button type="button" class="grid h-9 w-9 place-items-center rounded-lg border border-line bg-[var(--surface-2)] text-base transition hover:border-[var(--accent)] disabled:opacity-50" title="Generate subtitles" aria-label="Generate subtitles"
+      disabled={status.running} onclick={doSubs}>
+      <span aria-hidden="true" class="text-xs font-black tracking-tight text-[var(--accent)]">CC</span>
+    </button>
+  {/if}
+  <button type="button" class="grid h-9 w-9 place-items-center rounded-lg border border-line bg-[var(--surface-2)] text-base transition hover:border-[var(--accent)]" title="Stats" aria-label="Stats" onclick={() => (showStats = true)}>
+    <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6" rx="0.5"/><rect x="12" y="7" width="3" height="10" rx="0.5"/><rect x="17" y="13" width="3" height="4" rx="0.5"/></svg>
+  </button>
+  <button type="button" class="grid h-9 w-9 place-items-center rounded-lg border border-line bg-[var(--surface-2)] text-base transition hover:border-[var(--accent)]" title="Settings" aria-label="Settings" onclick={() => (showConfig = true)}>
+    <span aria-hidden="true">⚙</span>
+  </button>
 </div>
 
 <style>
