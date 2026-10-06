@@ -368,6 +368,7 @@ _sync = {
     "log": deque(maxlen=400),
     "auth_hint": False,       # heuristic: looks like an auth/cookie problem
     "account": None,          # {id, name} when the sync was started for ONE account
+    "deep": False,            # deep sync: re-read every conversation (ignore modifyTimes)
 }
 
 _AUTH_MARKERS = ("401", "403", "forbidden", "unauthor", "cloudflare", "cf_clearance", "expired")
@@ -458,10 +459,11 @@ def _run_autonomous_steps() -> None:
     _inproc_step("autotag", _do_autotag)
 
 
-def _sync_worker(only: str | None = None) -> None:
+def _sync_worker(only: str | None = None, deep: bool = False) -> None:
     """The full sync pipeline. ``only`` limits download/agents/conversations to that one
     account (paused or not — it was asked for by name); reindex, index, motion cache and
-    the Autonomous Mode post-steps run exactly as in a full sync."""
+    the Autonomous Mode post-steps run exactly as in a full sync. ``deep`` makes the
+    conversations step re-read every conversation instead of only new/changed ones."""
     py = sys.executable
     cli = str(ROOT / "grokive.py")
     if only is not None:
@@ -509,7 +511,8 @@ def _sync_worker(only: str | None = None) -> None:
             if acct_rc == 0:
                 # Imagine v2 media never reaches the favorites list "download" reads, and
                 # its chain isn't on the post — it only exists in the conversation.
-                acct_rc = _run_step(f"conversations{tag}", [py, cli, "conversations", *acct_args])
+                acct_rc = _run_step(f"conversations{tag}", [py, cli, "conversations", *acct_args,
+                                                            *(["--deep"] if deep else [])])
             if acct_rc != 0:
                 failures += 1
                 rc = acct_rc
@@ -588,6 +591,7 @@ def start_attribute(ids: list[str] | None = None) -> bool:
         _sync["running"] = True
         _sync["job"] = "attribute"
         _sync["account"] = None
+        _sync["deep"] = False
         _sync["step"] = "attribute"
         _sync["returncode"] = None
         _sync["auth_hint"] = False
@@ -599,15 +603,16 @@ def start_attribute(ids: list[str] | None = None) -> bool:
     return True
 
 
-def start_sync(account: dict | None = None) -> bool:
-    """Start the sync job (every active account, or just ``account``). False when the
-    shared job slot is busy."""
+def start_sync(account: dict | None = None, deep: bool = False) -> bool:
+    """Start the sync job (every active account, or just ``account``; ``deep`` re-reads
+    every conversation). False when the shared job slot is busy."""
     with _sync_lock:
         if _sync["running"]:
             return False
         _sync["running"] = True
         _sync["job"] = "sync"
         _sync["account"] = {"id": account["id"], "name": account["name"]} if account else None
+        _sync["deep"] = bool(deep)
         _sync["step"] = "download"
         _sync["returncode"] = None
         _sync["auth_hint"] = False
@@ -615,7 +620,7 @@ def start_sync(account: dict | None = None) -> bool:
         _sync["finished_at"] = None
         _sync["media_ready_at"] = None
         _sync["log"].clear()
-    threading.Thread(target=_sync_worker, args=(account["id"] if account else None,),
+    threading.Thread(target=_sync_worker, args=(account["id"] if account else None, bool(deep)),
                      daemon=True).start()
     return True
 
@@ -1048,6 +1053,7 @@ def start_subtitles() -> bool:
         _sync["running"] = True
         _sync["job"] = "subtitles"
         _sync["account"] = None
+        _sync["deep"] = False
         _sync["step"] = "scanning"
         _sync["returncode"] = None
         _sync["auth_hint"] = False
@@ -1085,6 +1091,7 @@ def start_motioncache() -> bool:
         _sync["running"] = True
         _sync["job"] = "motioncache"
         _sync["account"] = None
+        _sync["deep"] = False
         _sync["step"] = "motioncache"
         _sync["returncode"] = None
         _sync["auth_hint"] = False
@@ -1313,25 +1320,32 @@ def covers(mid: str) -> Response:
     abort(404)
 
 
-def _sync_one_account(acct_id: str) -> Response:
+def _deep_flag() -> bool:
+    v = (request.get_json(silent=True) or {}).get("deep")
+    return v is True or str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _sync_one_account(acct_id: str, deep: bool = False) -> Response:
     acct = next((a for a in _load_accounts() if a["id"] == acct_id), None)
     if acct is None:
         return jsonify(ok=False, error="No such account."), 404
     if not _account_configured(acct_id):
         return jsonify(ok=False, error="This account has no saved cURL session — paste one first."), 400
-    if start_sync(acct):
-        return jsonify(ok=True, account={"id": acct["id"], "name": acct["name"]})
+    if start_sync(acct, deep):
+        return jsonify(ok=True, deep=deep, account={"id": acct["id"], "name": acct["name"]})
     return jsonify(ok=False, error="Another job is already running"), 409
 
 
 @app.post("/api/sync")
 def api_sync() -> Response:
-    """Full sync; ``{account: id}`` syncs just that account (same pipeline + job slot)."""
+    """Full sync; ``{account: id}`` syncs just that account (same pipeline + job slot);
+    ``{deep: true}`` re-reads every conversation instead of only new/changed ones."""
     acct_id = str((request.get_json(silent=True) or {}).get("account") or "").strip()
+    deep = _deep_flag()
     if acct_id:
-        return _sync_one_account(acct_id)
-    if start_sync():
-        return jsonify(ok=True)
+        return _sync_one_account(acct_id, deep)
+    if start_sync(None, deep):
+        return jsonify(ok=True, deep=deep)
     return jsonify(ok=False, error="Sync already running"), 409
 
 
@@ -1354,6 +1368,7 @@ def api_sync_status() -> Response:
         media_ready_at=snap["media_ready_at"],
         auth_hint=snap["auth_hint"],
         account=snap.get("account"),
+        deep=bool(snap.get("deep")),
         log=log_tail,
     )
 
@@ -1683,8 +1698,9 @@ def api_accounts_check_all() -> Response:
 
 @app.post("/api/accounts/<acct_id>/sync")
 def api_accounts_sync_one(acct_id: str) -> Response:
-    """Run the normal sync pipeline for just this account (409 when a job is running)."""
-    return _sync_one_account(acct_id)
+    """Run the normal sync pipeline for just this account (409 when a job is running);
+    ``{deep: true}`` re-reads every one of its conversations."""
+    return _sync_one_account(acct_id, _deep_flag())
 
 
 @app.get("/api/accounts")

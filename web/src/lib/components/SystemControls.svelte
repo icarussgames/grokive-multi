@@ -51,19 +51,26 @@
       const subs = status.job === 'subtitles';
       const attr = status.job === 'attribute';
       const who = status.account?.name ? ` — ${status.account.name}` : '';
+      const syncWord = status.deep ? 'Deep sync' : 'Sync';
       loadGrokAccounts(); // a sync may follow an account rename/add in Config
       if (status.step === 'done') {
         onrefresh();
-        toast(subs ? 'Subtitles generated' : attr ? 'Accounts attributed' : `Sync complete${who}`, { type: 'success' });
+        toast(subs ? 'Subtitles generated' : attr ? 'Accounts attributed' : `${syncWord} complete${who}`, { type: 'success' });
       } else if (status.step === 'error') {
-        toast(status.auth_hint ? `Sync failed${who} — check your Grok auth` : `${subs ? 'Subtitles' : attr ? 'Re-attribution' : 'Sync'} failed${who}`, { type: 'error' });
+        toast(status.auth_hint ? `${syncWord} failed${who} — check your Grok auth` : `${subs ? 'Subtitles' : attr ? 'Re-attribution' : syncWord} failed${who}`, { type: 'error' });
         showLog = true; // surface the log so the failure detail is one glance away
       }
     }
   }
   function kick() { observedRunning = true; mediaRefreshed = false; if (!polling) poll(); }
 
-  async function doSync() { await startSync(); kick(); }
+  // Shift+click = deep sync (re-read every conversation, ignoring last-modified times).
+  async function doSync(e) {
+    const deep = !!e?.shiftKey;
+    await startSync(deep);
+    if (deep) toast('Deep sync — rechecking every conversation (slower)', { type: 'success' });
+    kick();
+  }
   async function doSubs() {
     const r = await startSubtitles();
     if (r.status === 400) { toast('Set a Whisper URL in Config', { type: 'error' }); return; }
@@ -98,7 +105,7 @@
   const soloName = $derived(status.job === 'sync' && status.account?.name ? status.account.name : '');
   const pillStep = (s) => { const [base, acct] = stepParts(s); return soloName ? (STEP_LABELS[base] || base) : withAccount(STEP_LABELS[base] || base, acct); };
   const pillText = $derived(
-    status.running ? `${status.job === 'subtitles' ? 'Subtitles' : status.job === 'attribute' ? 'Attributing' : soloName ? `Syncing ${soloName}` : 'Syncing'}: ${pillStep(status.step)}`
+    status.running ? `${status.job === 'subtitles' ? 'Subtitles' : status.job === 'attribute' ? 'Attributing' : `${status.deep ? 'Deep syncing' : 'Syncing'}${soloName ? ` ${soloName}` : ''}`}: ${pillStep(status.step)}`
       : status.step === 'error' ? (status.auth_hint ? 'Auth failed' : 'Failed')
       : status.step === 'done' ? 'Synced' : 'Ready'
   );
@@ -219,7 +226,8 @@
     <span class="truncate">{logLabel}</span>
   </button>
   <span class="mx-0.5 hidden h-6 w-px self-center bg-line md:block" aria-hidden="true"></span>
-  <button class="cta-primary rounded-lg border border-transparent bg-[var(--accent)] px-3 py-1.5 text-sm font-semibold text-[var(--on-accent)] transition enabled:hover:brightness-110 enabled:active:brightness-95 disabled:opacity-50" onclick={doSync} disabled={status.running}>Sync</button>
+  <button class="cta-primary rounded-lg border border-transparent bg-[var(--accent)] px-3 py-1.5 text-sm font-semibold text-[var(--on-accent)] transition enabled:hover:brightness-110 enabled:active:brightness-95 disabled:opacity-50" onclick={doSync} disabled={status.running}
+    title="Sync new media from every active account · Shift+click for a deep sync (recheck every conversation, ignoring last-modified times — slower)">Sync</button>
   <Popover align="right" ariaLabel="Settings" title="Settings"
     triggerClass="grid h-9 w-9 place-items-center rounded-lg border border-line bg-[var(--surface-2)] text-base transition hover:border-[var(--accent)]">
     {#snippet trigger()}<span aria-hidden="true">⚙</span>{/snippet}

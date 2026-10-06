@@ -141,7 +141,7 @@ def test_sync_one_account_runs_the_pipeline_for_just_that_account(srv, monkeypat
 
 def test_sync_one_account_routes(srv, monkeypatch):
     started = []
-    monkeypatch.setattr(srv, "start_sync", lambda acct=None: started.append(acct) or True)
+    monkeypatch.setattr(srv, "start_sync", lambda acct=None, deep=False: started.append(acct) or True)
     c = _client(srv)
     r = c.post("/api/accounts/2172d829/sync")
     assert r.status_code == 200 and r.get_json()["account"]["name"] == "epsilontaumake"
@@ -149,7 +149,7 @@ def test_sync_one_account_routes(srv, monkeypatch):
     assert r.status_code == 200 and started[-1]["id"] == "default"
     assert c.post("/api/accounts/deadbeef/sync").status_code == 400  # no session
     assert c.post("/api/accounts/nope/sync").status_code == 404
-    monkeypatch.setattr(srv, "start_sync", lambda acct=None: False)
+    monkeypatch.setattr(srv, "start_sync", lambda acct=None, deep=False: False)
     r = c.post("/api/accounts/default/sync")
     assert r.status_code == 409 and "already running" in r.get_json()["error"]
 
@@ -160,5 +160,29 @@ def test_status_reports_the_single_account(srv, monkeypatch):
     st = _client(srv).get("/api/sync/status").get_json()
     assert st["running"] and st["account"] == {"id": "2172d829", "name": "epsilontaumake"}
     assert srv.start_sync() is False  # slot busy
+    with srv._sync_lock:
+        srv._sync["running"] = False
+
+
+def test_deep_flag_reaches_start_sync_from_every_route(srv, monkeypatch):
+    started = []
+    monkeypatch.setattr(srv, "start_sync", lambda acct=None, deep=False: started.append((acct and acct["id"], deep)) or True)
+    c = _client(srv)
+    assert c.post("/api/accounts/2172d829/sync", json={"deep": True}).get_json()["deep"] is True
+    c.post("/api/accounts/2172d829/sync")
+    c.post("/api/sync", json={"deep": True, "account": "default"})
+    c.post("/api/sync", json={"deep": True})
+    c.post("/api/sync")
+    assert started == [("2172d829", True), ("2172d829", False), ("default", True), (None, True), (None, False)]
+    monkeypatch.setattr(srv, "start_sync", lambda acct=None, deep=False: False)
+    assert c.post("/api/accounts/default/sync", json={"deep": True}).status_code == 409
+    assert c.post("/api/sync", json={"deep": True}).status_code == 409
+
+
+def test_status_reports_deep(srv, monkeypatch):
+    monkeypatch.setattr(srv.threading, "Thread", lambda **kw: type("T", (), {"start": lambda self: None})())
+    assert srv.start_sync({"id": "default", "name": "twitter-acc1"}, True) is True
+    st = _client(srv).get("/api/sync/status").get_json()
+    assert st["deep"] is True and st["account"]["name"] == "twitter-acc1"
     with srv._sync_lock:
         srv._sync["running"] = False

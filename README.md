@@ -114,6 +114,20 @@ normal Sync pipeline for just that account, even a paused one (`POST
 /api/accounts/<id>/sync`, or `POST /api/sync` with `{"account": "<id>"}`; one job at a
 time, so it answers 409 while another runs). Checks never log or return cookie values.
 
+**Incremental conversations & deep sync.** Media made in the current Imagine UI is
+archived conversation by conversation. Sync now only reads conversations that are new
+or whose *last modified* time changed since they were last archived cleanly, and stops
+listing once a whole page is unchanged (it keeps going if an earlier failure is still
+waiting to be retried, or if Grok's list isn't in last-modified order). The times are kept
+per account in `conversation_state.json`. A conversation with a failed download is not
+marked done, so it's retried next time. The first sync of an account (or one whose items
+aren't in the library) reads everything once. **Deep sync** keeps the old behaviour:
+it re-reads every conversation and then refreshes the saved times. Run it with the
+**Deep** button next to an account in Config → Grok accounts, Shift+click **Sync**,
+`POST /api/sync` with `{"deep": true}` (optionally with `"account"`), or
+`python grokive.py conversations --deep`. Favorites and Agent canvases are listed in full
+every sync, as before.
+
 All state (`grok_auth.txt` + `grok_accounts.json`/`grok_accounts/` (Grok account
 sessions), `metadata.json`, `index.db` (the derived SQLite
 read-model), `library.json` (favorites/archive), `deleted_ids.json` (delete blocklist),

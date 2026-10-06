@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import mimetypes
@@ -24,6 +25,9 @@ from mediautil import file_content_hash, media_shard
 DEFAULT_METADATA = Path("metadata.json")
 DEFAULT_FAILURES = Path("failed_downloads.json")
 DEFAULT_DELETED = Path("deleted_ids.json")
+# Incremental conversations: per account, the modifyTime each Imagine conversation had
+# when it was last fully archived (see archive_conversations).
+DEFAULT_CONVERSATION_STATE = Path("conversation_state.json")
 # Root holding media/, thumbnails/ and the built galleries. Files are written under
 # here, but local_path is stored relative to this root so the galleries resolve it
 # the same way regardless of where the repo lives.
@@ -34,6 +38,9 @@ DELETED_IDS: set[str] = set()
 # Count of items re-downloaded in place this run because Grok began serving an HD
 # (upscaled) variant for an id we already had — surfaced in the run summary.
 REFRESHED: int = 0
+# Items whose download (or HD-refresh write) failed this run. archive_conversations reads it
+# before/after each conversation so a conversation with a failed item isn't marked done.
+FAILED_COUNT: int = 0
 # Which Grok account (grok_accounts.json id) this run lists. Every item the account lists —
 # new downloads AND already-held items it would otherwise skip — gets the id added to its
 # record's `accounts` list, so an item can belong to several accounts. Records with no
@@ -285,11 +292,20 @@ def grok_conversation_responses_spec(auth_spec: RequestSpec, conversation_id: st
     )
 
 
-def list_grok_conversations(
-    client: httpx.Client, auth_spec: RequestSpec, max_pages: int | None = None
-) -> list[tuple[str, str]]:
-    """Return (id, title) for every Imagine conversation on the account, newest first."""
-    out: list[tuple[str, str]] = []
+def list_grok_conversation_entries(
+    client: httpx.Client,
+    auth_spec: RequestSpec,
+    max_pages: int | None = None,
+    stop_after_page=None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Every Imagine conversation on the account as {id, title, modify_time, starred}, in
+    Grok's order (most recently modified first).
+
+    ``stop_after_page(page_entries)`` is called with each page's new entries; returning True
+    ends the listing there. Returns (entries, complete) — complete is True only when the
+    listing ran to its natural end (no early stop, no --max-pages cut), i.e. it saw every
+    conversation the account has."""
+    out: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     seen_tokens: set[str] = set()
     token: str | None = None
@@ -297,19 +313,128 @@ def list_grok_conversations(
     while True:
         data = request_json_with_backoff(client, grok_conversation_list_spec(auth_spec, 100, token))
         conversations = data.get("conversations") if isinstance(data, dict) else None
+        page: list[dict[str, Any]] = []
         for conversation in conversations or []:
             if not isinstance(conversation, dict):
                 continue
             conv_id = str(conversation.get("conversationId") or conversation.get("id") or "")
             if conv_id and conv_id not in seen_ids:
                 seen_ids.add(conv_id)
-                out.append((conv_id, str(conversation.get("title") or conv_id)))
+                modify = conversation.get("modifyTime")
+                page.append({
+                    "id": conv_id,
+                    "title": str(conversation.get("title") or conv_id),
+                    "modify_time": str(modify) if isinstance(modify, str) and modify else None,
+                    "starred": bool(conversation.get("starred")),
+                })
+        out.extend(page)
         pages += 1
         token = data.get("nextPageToken") if isinstance(data, dict) else None
-        if not token or token in seen_tokens or (max_pages is not None and pages >= max_pages):
-            return out
+        if not token or token in seen_tokens:
+            return out, True
+        if max_pages is not None and pages >= max_pages:
+            return out, False
+        if stop_after_page is not None and stop_after_page(page):
+            return out, False
         seen_tokens.add(token)
         time.sleep(1)
+
+
+def list_grok_conversations(
+    client: httpx.Client, auth_spec: RequestSpec, max_pages: int | None = None
+) -> list[tuple[str, str]]:
+    """Return (id, title) for every Imagine conversation on the account, newest first."""
+    entries, _ = list_grok_conversation_entries(client, auth_spec, max_pages)
+    return [(e["id"], e["title"]) for e in entries]
+
+
+# --------------------------------------------------------------------------- #
+# Incremental conversations state
+#
+# {"version": 1, "accounts": {"<account id>": {
+#     "conversations": {"<conversation id>": "<modifyTime when last fully archived>"},
+#     "pending": ["<conversation id>", ...]   # listed but not archived cleanly yet
+# }}}
+# --------------------------------------------------------------------------- #
+
+def load_conversation_state(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"version": 1, "accounts": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("accounts"), dict):
+        return {"version": 1, "accounts": {}}
+    return data
+
+
+def save_conversation_state(path: Path, state: dict[str, Any]) -> None:
+    _atomic_write_text(path, json.dumps(state, indent=1, sort_keys=True))
+
+
+def _account_conversation_state(state: dict[str, Any], account: str) -> dict[str, Any] | None:
+    """This account's slice of the state, or None when it has never been recorded."""
+    acct = state["accounts"].get(account)
+    if not isinstance(acct, dict):
+        return None
+    convs = acct.get("conversations")
+    pending = acct.get("pending")
+    return {
+        "conversations": {str(k): str(v) for k, v in convs.items()} if isinstance(convs, dict) else {},
+        "pending": [str(x) for x in pending] if isinstance(pending, list) else [],
+    }
+
+
+def _conversation_unchanged(entry: dict[str, Any], known: dict[str, str]) -> bool:
+    """Unchanged = recorded before with exactly this modifyTime. A conversation without a
+    modifyTime is never "unchanged" (we can't tell), so it is always re-read."""
+    mt = entry.get("modify_time")
+    return bool(mt) and known.get(entry["id"]) == mt
+
+
+def _modify_key(mt: str):
+    """Sortable form of an ISO modifyTime ("2026-10-05T23:19:27.258Z"). Parsed so differing
+    fractional-second precision can't misorder two stamps; falls back to the raw string."""
+    try:
+        head, _, frac = mt.rstrip("Z").partition(".")
+        base = datetime.datetime.fromisoformat(head)
+        if base.tzinfo is not None:  # keep every key naive-UTC so they always compare
+            base = base.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        return (base, float("0." + frac) if frac.isdigit() else 0.0)
+    except ValueError:
+        return (datetime.datetime.min, 0.0, mt)
+
+
+def _make_early_stop(known: dict[str, str], pending: set[str]):
+    """The incremental listing's stop rule — deliberately conservative. Stop after a page
+    only when ALL of these hold:
+      * the page is non-empty and every conversation on it is unchanged;
+      * every conversation left pending by an earlier run has been seen (a failed old
+        conversation sits deep in the list and must still be retried);
+      * every non-starred conversation listed so far came in non-increasing modifyTime
+        order (Grok sorts by last modified; if it ever doesn't, never stop early).
+    Starred conversations are exempt from the order check in case they're pinned on top."""
+    seen_pending: set[str] = set()
+    state = {"ordered": True, "last": None}
+
+    def stop(page: list[dict[str, Any]]) -> bool:
+        for entry in page:
+            if entry["id"] in pending:
+                seen_pending.add(entry["id"])
+            mt = entry.get("modify_time")
+            if entry.get("starred"):
+                continue
+            if not mt:
+                state["ordered"] = False
+                continue
+            key = _modify_key(mt)
+            if state["last"] is not None and key > state["last"]:
+                state["ordered"] = False
+            state["last"] = key
+        return (state["ordered"] and bool(page)
+                and all(_conversation_unchanged(e, known) for e in page)
+                and pending <= seen_pending)
+
+    return stop
 
 
 def _media_gen_input(response: dict[str, Any]) -> dict[str, Any]:
@@ -1237,6 +1362,8 @@ def _fetch_item(client: httpx.Client, media_spec: RequestSpec, job: _ItemJob) ->
 
 
 def _record_failure(job: _ItemJob, exc: Exception, args: argparse.Namespace) -> None:
+    global FAILED_COUNT
+    FAILED_COUNT += 1
     append_failure(args.failures, {"id": job.item_id, "source_url": job.url, "error": str(exc)})
     print(f"failed {'HD refresh ' if job.kind == 'refresh' else ''}{job.item_id}: {exc}")
 
@@ -1309,6 +1436,8 @@ def _apply_refresh(
                 pass
         _drop_thumbnail(item_id)
     except Exception as exc:  # noqa: BLE001 - never let one item abort the sync
+        global FAILED_COUNT
+        FAILED_COUNT += 1
         print(f"failed HD refresh record {item_id}: {exc}")
         return
     REFRESHED += 1
@@ -1483,6 +1612,20 @@ def main() -> None:
         help="Re-fetch the list(s) and backfill metadata (e.g. created_at) on existing records without downloading media.",
     )
     parser.add_argument(
+        "--deep",
+        action="store_true",
+        help=(
+            "Conversations: re-read EVERY Imagine conversation, ignoring the stored "
+            "last-modified times (the old, slow behaviour), then refresh the stored state."
+        ),
+    )
+    parser.add_argument(
+        "--conversation-state",
+        type=Path,
+        default=DEFAULT_CONVERSATION_STATE,
+        help="Where incremental conversation sync keeps each account's last-archived modifyTimes.",
+    )
+    parser.add_argument(
         "--account",
         default=None,
         help=(
@@ -1637,40 +1780,140 @@ def archive_conversations(
     This is the only route left to media made in the new Imagine UI: it never lands in
     the favorites list the ``download`` step reads, and post/get reports no children for
     it (see GROK_CHAT_CONVERSATIONS_ENDPOINT)."""
+    # Incremental by default: a conversation whose modifyTime matches the one recorded the
+    # last time it was archived cleanly is skipped (its responses aren't fetched at all).
+    # Not for explicit ids (nothing to compare against) or --refresh-metadata (attribution
+    # must see every conversation, and it downloads nothing, so it must not mark anything
+    # archived). --deep re-reads everything and then refreshes the state.
+    track = not args.grok_conversations and not args.refresh_metadata
+    deep = bool(getattr(args, "deep", False))
+    account = ACCOUNT_ID or "default"
+    state_path: Path = getattr(args, "conversation_state", None) or DEFAULT_CONVERSATION_STATE
+    state = load_conversation_state(state_path) if track else {"version": 1, "accounts": {}}
+    prior = _account_conversation_state(state, account) if track else None
+    if prior and prior["conversations"] and not any(
+            account in (rec.get("accounts") or []) for rec in by_id.values()):
+        # The state says this account was archived, but the library holds nothing from it
+        # (metadata.json reset / fresh restore): trusting the state would skip everything.
+        print(f"conversations: library has no items from account '{account}' — ignoring saved state")
+        prior = None
+    known = prior["conversations"] if prior else {}
+    old_pending = set(prior["pending"]) if prior else set()
+    incremental = track and not deep and prior is not None
+
+    complete = True
+    entries: list[dict[str, Any]]
     if args.grok_conversations:
         requested = [normalize_conversation_id(value) for value in args.grok_conversations]
-        conversations = [(conv_id, conv_id) for conv_id in requested]
+        entries = [{"id": c, "title": c, "modify_time": None, "starred": False} for c in requested]
     else:
-        conversations = list_grok_conversations(client, auth_spec, args.max_pages)
+        stop = _make_early_stop(known, old_pending) if incremental else None
+        entries, complete = list_grok_conversation_entries(client, auth_spec, args.max_pages, stop)
 
-    print(f"found {len(conversations)} imagine conversation(s)")
+    print(f"found {len(entries)} imagine conversation(s)")
+    if track:
+        if deep:
+            print("conversations: deep sync — re-reading every conversation")
+        elif prior is None:
+            print(f"conversations: no saved state for account '{account}' yet — reading every conversation once")
+        elif not complete and not args.max_pages:
+            print("conversations: listing stopped early — the rest are unchanged since the last sync")
+    todo = [e for e in entries if not (incremental and _conversation_unchanged(e, known))]
+    skipped = len(entries) - len(todo)
+    if track:
+        print(f"conversations: {len(todo):,} changed/new, {skipped:,} unchanged skipped")
+
+    acct_state = {"conversations": dict(known), "pending": set(old_pending)}
+    dirty = 0
+
+    def flush() -> None:
+        nonlocal dirty
+        if not track:
+            return
+        if complete:
+            # Saw the whole list: forget conversations that no longer exist, and pending
+            # ids that didn't show up again.
+            listed = {e["id"] for e in entries}
+            acct_state["conversations"] = {k: v for k, v in acct_state["conversations"].items() if k in listed}
+            acct_state["pending"] &= listed
+        state["accounts"][account] = {
+            "conversations": acct_state["conversations"],
+            "pending": sorted(acct_state["pending"]),
+        }
+        save_conversation_state(state_path, state)
+        dirty = 0
+
+    def done(entry: dict[str, Any], ok: bool) -> None:
+        nonlocal dirty
+        if not track:
+            return
+        if ok and entry.get("modify_time"):
+            acct_state["conversations"][entry["id"]] = entry["modify_time"]
+            acct_state["pending"].discard(entry["id"])
+        else:
+            # Not archived cleanly (or no modifyTime to compare later): retry next sync.
+            acct_state["conversations"].pop(entry["id"], None)
+            if not ok:
+                acct_state["pending"].add(entry["id"])
+        dirty += 1
+        if dirty >= 25:
+            flush()
+
     saved_count = 0
-    for conv_id, title in conversations:
-        try:
-            data = request_json_with_backoff(client, grok_conversation_responses_spec(auth_spec, conv_id))
-            items = extract_conversation_items(data)
-        except Exception as exc:  # noqa: BLE001 - one unreadable conversation must not end the sync
-            print(f"conversation {conv_id}: failed ({exc})")
-            continue
-        print(f"conversation {conv_id} '{title}': {len(items)} media items")
-        if args.refresh_metadata:
-            for raw in items:
-                saved_count += patch_existing_record(raw, by_id)
-            continue
-        # v2 never names its 1080p renders, so ask the CDN before downloading anything.
-        # Skipped under --refresh-metadata (above): that path only patches records, and pointing
-        # one at a file we haven't downloaded would leave the record describing bytes we don't have.
-        upgraded = prefer_hd1080(media_spec, items, by_id)
-        if upgraded:
-            print(f"  {upgraded} video(s) have a 1080p render — taking that instead of SD")
-        # One batch per conversation, fully applied before the next conversation is planned,
-        # so an asset shared by two conversations resolves exactly as it did serially: the
-        # second sees the first's record.
-        before = saved_count
-        saved_count += process_items(client, media_spec, items, by_id, args)
-        if args.quiet and saved_count // 100 > before // 100:
-            print(f"saved {saved_count} new files; metadata records: {len(by_id)}")
+    failed_convs = 0
+    try:
+        for entry in todo:
+            conv_id, title = entry["id"], entry["title"]
+            try:
+                data = request_json_with_backoff(client, grok_conversation_responses_spec(auth_spec, conv_id))
+                items = extract_conversation_items(data)
+            except Exception as exc:  # noqa: BLE001 - one unreadable conversation must not end the sync
+                print(f"conversation {conv_id}: failed ({exc})")
+                failed_convs += 1
+                done(entry, False)
+                continue
+            print(f"conversation {conv_id} '{title}': {len(items)} media items")
+            if args.refresh_metadata:
+                for raw in items:
+                    saved_count += patch_existing_record(raw, by_id)
+                continue
+            failures_before = FAILED_COUNT
+            saved_count += _archive_conversation_items(client, media_spec, items, by_id, args, saved_count)
+            ok = FAILED_COUNT == failures_before
+            if not ok:
+                failed_convs += 1
+                print(f"conversation {conv_id}: {FAILED_COUNT - failures_before} item(s) failed — will retry next sync")
+            done(entry, ok)
+    finally:
+        flush()
+    if track and failed_convs:
+        print(f"conversations: {failed_convs} conversation(s) not archived cleanly — they'll be retried next sync")
     return saved_count
+
+
+def _archive_conversation_items(
+    client: httpx.Client,
+    media_spec: RequestSpec,
+    items: list[dict[str, Any]],
+    by_id: dict[str, dict[str, Any]],
+    args: argparse.Namespace,
+    saved_count: int,
+) -> int:
+    """Download one conversation's items (1080p upgrade first). Returns new files saved."""
+    # v2 never names its 1080p renders, so ask the CDN before downloading anything.
+    # Never reached under --refresh-metadata (the caller only patches records there): pointing
+    # one at a file we haven't downloaded would leave the record describing bytes we don't have.
+    upgraded = prefer_hd1080(media_spec, items, by_id)
+    if upgraded:
+        print(f"  {upgraded} video(s) have a 1080p render — taking that instead of SD")
+    # One batch per conversation, fully applied before the next conversation is planned,
+    # so an asset shared by two conversations resolves exactly as it did serially: the
+    # second sees the first's record.
+    before = saved_count
+    saved = process_items(client, media_spec, items, by_id, args)
+    if args.quiet and (before + saved) // 100 > before // 100:
+        print(f"saved {before + saved} new files; metadata records: {len(by_id)}")
+    return saved
 
 
 def archive_agent_canvases(

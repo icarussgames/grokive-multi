@@ -170,6 +170,10 @@ def main() -> int:
     )
     conversations.add_argument("--verbose", action="store_true")
     _add_account_args(conversations)
+    conversations.add_argument(
+        "--deep", action="store_true",
+        help="Re-read every conversation, ignoring stored last-modified times (slow; the default "
+             "only reads conversations that are new or changed since the last sync).")
 
     post = sub.add_parser("post", help="Download specific Grok Imagine posts, including original/base and child media.")
     post.add_argument("--curl", default=default_curl())
@@ -227,6 +231,7 @@ def main() -> int:
             sys.executable, script("gdownloader.py"),
             "--curl", args.curl,
             *_account_flags(args),
+            *(["--deep"] if args.deep else []),
             "--grok-conversations", *args.conversation_ids,
         ]
         if not args.verbose:

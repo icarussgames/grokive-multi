@@ -336,7 +336,10 @@ export async function movieResolutions({ collections = [], ids = [], perCollecti
 export const startMotionCache = () => fetch('/api/movie/motioncache', { method: 'POST' });
 
 // --- Jobs (sync + subtitles share one slot) --------------------------------
-export const startSync = () => fetch('/api/sync', { method: 'POST' });
+// deep: re-read every Imagine conversation instead of only new/changed ones (slower).
+export const startSync = (deep = false) => fetch('/api/sync', deep
+  ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deep: true }) }
+  : { method: 'POST' });
 export const startSubtitles = () => fetch('/api/subtitles', { method: 'POST' });
 export const syncStatus = () => getJSON('/api/sync/status');
 
@@ -372,7 +375,7 @@ async function _postJSON(url, body) {
 export const checkAccount = (id) => _postJSON(`/api/accounts/${encodeURIComponent(id)}/check`);
 export const checkAllAccounts = () => _postJSON('/api/accounts/check');
 // Normal sync pipeline for just this account (shared job slot; httpStatus 409 when busy).
-export const syncAccount = (id) => _postJSON(`/api/accounts/${encodeURIComponent(id)}/sync`);
+export const syncAccount = (id, deep = false) => _postJSON(`/api/accounts/${encodeURIComponent(id)}/sync`, deep ? { deep: true } : {});
 export const createAccount = (body) =>
   fetch('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 export const updateAccount = (id, body) =>

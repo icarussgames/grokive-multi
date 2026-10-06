@@ -238,11 +238,11 @@
       acctChecking = {};
     }
   }
-  async function runAccountSync(a) {
-    const r = await syncAccount(a.id);
+  async function runAccountSync(a, deep = false) {
+    const r = await syncAccount(a.id, deep);
     if (r.ok) {
       jobKick.update((n) => n + 1); // the top-bar status pill starts following the job
-      toast(`Syncing ${a.name}… progress is in the job log`, { type: 'success' });
+      toast(`${deep ? 'Deep syncing' : 'Syncing'} ${a.name}… progress is in the job log`, { type: 'success' });
     } else {
       toast(r.httpStatus === 409 ? 'Another job is already running — wait for it to finish' : r.error || `Couldn't sync ${a.name}`, { type: 'error' });
     }
@@ -672,7 +672,7 @@
     </div>
   {:else}
     <!-- Account list: tap a row to edit, flip the switch to include/exclude it from Sync. -->
-    <p class="mb-3 text-sm text-muted">Sync fetches every <strong class="text-ink">active</strong> account, one at a time. Toggle an account off to skip it without losing its session. <span class="whitespace-nowrap">Check</span> tests a saved session without downloading; the sync button runs Sync for just that account.</p>
+    <p class="mb-3 text-sm text-muted">Sync fetches every <strong class="text-ink">active</strong> account, one at a time. Toggle an account off to skip it without losing its session. <span class="whitespace-nowrap">Check</span> tests a saved session without downloading; the sync button runs Sync for just that account (only new or changed conversations); <span class="whitespace-nowrap">Deep</span> rechecks all of them.</p>
     {#if accounts.filter((a) => a.configured).length > 1}
       <div class="mb-2 flex justify-end">
         <button type="button" class="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition hover:border-[var(--accent)] hover:bg-[var(--surface-2)] disabled:opacity-50 pointer-coarse:min-h-10"
@@ -716,6 +716,9 @@
                 aria-label={`Sync ${a.name} only`} onclick={() => runAccountSync(a)}>
                 <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/></svg>
               </button>
+              <button type="button" class="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-dashed border-line px-2 text-xs font-semibold text-muted transition hover:border-[var(--accent)] hover:bg-[var(--surface-2)] hover:text-ink pointer-coarse:min-h-11"
+                title="Deep sync — recheck every conversation, ignoring last-modified times (slower)"
+                aria-label={`Deep sync ${a.name}`} onclick={() => runAccountSync(a, true)}>Deep</button>
             {/if}
             <button type="button" role="switch" aria-checked={a.active} class="acct-switch shrink-0"
               title={a.active ? 'Active — included in Sync' : 'Paused — excluded from Sync'}
