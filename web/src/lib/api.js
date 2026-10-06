@@ -360,6 +360,19 @@ export async function startAttribute(ids = null) {
   });
   try { return await res.json(); } catch { return { ok: false, error: `${res.status}` }; }
 }
+async function _postJSON(url, body) {
+  const res = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {})
+  });
+  let j = {};
+  try { j = await res.json(); } catch { j = { ok: false, error: `HTTP ${res.status}` }; }
+  return { httpStatus: res.status, ...j };
+}
+// "Check auth": one lightweight request with the account's saved session -> {ok, status, message, checked_at}
+export const checkAccount = (id) => _postJSON(`/api/accounts/${encodeURIComponent(id)}/check`);
+export const checkAllAccounts = () => _postJSON('/api/accounts/check');
+// Normal sync pipeline for just this account (shared job slot; httpStatus 409 when busy).
+export const syncAccount = (id) => _postJSON(`/api/accounts/${encodeURIComponent(id)}/sync`);
 export const createAccount = (body) =>
   fetch('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 export const updateAccount = (id, body) =>

@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
-  import { getAccounts, createAccount, updateAccount, deleteAccount, getSettings, postSettings, fetchProviderModels, authStatus, logout, exportBackup, restoreBackup } from '$lib/api.js';
-  import { loadSettings, theme, setTheme, THEMES, mode } from '$lib/state.js';
+  import { checkAccount, checkAllAccounts, syncAccount, getAccounts, createAccount, updateAccount, deleteAccount, getSettings, postSettings, fetchProviderModels, authStatus, logout, exportBackup, restoreBackup } from '$lib/api.js';
+  import { loadSettings, theme, setTheme, THEMES, mode, jobKick } from '$lib/state.js';
   import { portal } from '$lib/portal.js';
   import { toast } from '$lib/toast.js';
   import { trapFocus } from '$lib/focusTrap.js';
@@ -194,6 +194,58 @@
 
   async function refreshAccounts() {
     try { accounts = (await getAccounts()).accounts || []; } catch {}
+    // Seed the inline auth verdicts from the server's last check (survives closing the modal).
+    const seeded = {};
+    for (const a of accounts) if (a.last_check) seeded[a.id] = a.last_check;
+    acctChecks = seeded; // the server records every check (and forgets it when a new cURL is saved)
+  }
+
+  // Per-account "Check auth" / "Sync this account".
+  let acctChecks = $state({}); // id -> { ok, status, message, checked_at }
+  let acctChecking = $state({}); // id -> true while its check is in flight
+  let checkingAll = $state(false);
+  function checkedWhen(stamp) {
+    if (!stamp) return '';
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return stamp.startsWith(today) ? stamp.slice(11, 16) : stamp.slice(0, 16);
+  }
+  async function runAccountCheck(a) {
+    acctChecking = { ...acctChecking, [a.id]: true };
+    try {
+      const r = await checkAccount(a.id);
+      acctChecks = { ...acctChecks, [a.id]: r.message ? r : { ok: false, status: r.httpStatus, message: r.error || 'Check failed', checked_at: '' } };
+    } catch {
+      acctChecks = { ...acctChecks, [a.id]: { ok: false, status: 'network', message: "Couldn't reach the server", checked_at: '' } };
+    } finally {
+      acctChecking = { ...acctChecking, [a.id]: false };
+    }
+  }
+  async function runCheckAll() {
+    checkingAll = true;
+    acctChecking = Object.fromEntries(accounts.map((a) => [a.id, true]));
+    try {
+      const r = await checkAllAccounts();
+      const next = { ...acctChecks };
+      for (const x of r.results || []) next[x.id] = x;
+      acctChecks = next;
+      const bad = (r.results || []).filter((x) => !x.ok).length;
+      toast(bad ? `${bad} account${bad === 1 ? '' : 's'} need attention` : 'All sessions OK', { type: bad ? 'error' : 'success' });
+    } catch {
+      toast("Couldn't check the accounts", { type: 'error' });
+    } finally {
+      checkingAll = false;
+      acctChecking = {};
+    }
+  }
+  async function runAccountSync(a) {
+    const r = await syncAccount(a.id);
+    if (r.ok) {
+      jobKick.update((n) => n + 1); // the top-bar status pill starts following the job
+      toast(`Syncing ${a.name}… progress is in the job log`, { type: 'success' });
+    } else {
+      toast(r.httpStatus === 409 ? 'Another job is already running — wait for it to finish' : r.error || `Couldn't sync ${a.name}`, { type: 'error' });
+    }
   }
 
   function openAccountEditor(a) {
@@ -620,7 +672,13 @@
     </div>
   {:else}
     <!-- Account list: tap a row to edit, flip the switch to include/exclude it from Sync. -->
-    <p class="mb-3 text-sm text-muted">Sync fetches every <strong class="text-ink">active</strong> account, one at a time. Toggle an account off to skip it without losing its session.</p>
+    <p class="mb-3 text-sm text-muted">Sync fetches every <strong class="text-ink">active</strong> account, one at a time. Toggle an account off to skip it without losing its session. <span class="whitespace-nowrap">Check</span> tests a saved session without downloading; the sync button runs Sync for just that account.</p>
+    {#if accounts.filter((a) => a.configured).length > 1}
+      <div class="mb-2 flex justify-end">
+        <button type="button" class="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition hover:border-[var(--accent)] hover:bg-[var(--surface-2)] disabled:opacity-50 pointer-coarse:min-h-10"
+          disabled={checkingAll} onclick={runCheckAll}>{checkingAll ? 'Checking…' : 'Check all'}</button>
+      </div>
+    {/if}
     {#if accounts.length}
       <div class="overflow-hidden rounded-xl border border-line">
         {#each accounts as a, i (a.id)}
@@ -633,9 +691,32 @@
                 <span class="block truncate text-xs {a.configured ? 'text-muted' : 'text-[var(--danger-ink)]'}">
                   {a.configured ? `Session saved ${a.mtime}` : 'No session — tap to paste the cURL'}{a.active ? '' : ' · paused'}
                 </span>
+                {#if acctChecks[a.id]}
+                  {@const chk = acctChecks[a.id]}
+                  <span class="mt-0.5 flex items-start gap-1 text-xs font-semibold {chk.ok ? 'text-[var(--success-ink)]' : 'text-[var(--danger-ink)]'}" role="status">
+                    {#if chk.ok}
+                      <svg viewBox="0 0 24 24" class="mt-px h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                    {:else}
+                      <svg viewBox="0 0 24 24" class="mt-px h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    {/if}
+                    <span class="min-w-0">{chk.message}{#if chk.checked_at}<span class="font-normal text-muted"> · checked {checkedWhen(chk.checked_at)}</span>{/if}</span>
+                  </span>
+                {/if}
               </span>
               <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0 text-muted" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
             </button>
+            {#if a.configured}
+              <button type="button" class="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-line px-2 text-xs font-semibold transition hover:border-[var(--accent)] hover:bg-[var(--surface-2)] disabled:opacity-50 pointer-coarse:min-h-11"
+                title="Check auth — test this account's saved session against Grok (downloads nothing)"
+                aria-label={`Check auth for ${a.name}`} disabled={acctChecking[a.id]} onclick={() => runAccountCheck(a)}>
+                {acctChecking[a.id] ? '…' : 'Check'}
+              </button>
+              <button type="button" class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line transition hover:border-[var(--accent)] hover:bg-[var(--surface-2)] pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+                title={`Sync this account — download ${a.name}'s new media, then re-index`}
+                aria-label={`Sync ${a.name} only`} onclick={() => runAccountSync(a)}>
+                <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/></svg>
+              </button>
+            {/if}
             <button type="button" role="switch" aria-checked={a.active} class="acct-switch shrink-0"
               title={a.active ? 'Active — included in Sync' : 'Paused — excluded from Sync'}
               aria-label={`${a.name}: ${a.active ? 'active' : 'paused'}`} onclick={() => toggleAccountActive(a)}>

@@ -367,6 +367,7 @@ _sync = {
     "media_ready_at": None,
     "log": deque(maxlen=400),
     "auth_hint": False,       # heuristic: looks like an auth/cookie problem
+    "account": None,          # {id, name} when the sync was started for ONE account
 }
 
 _AUTH_MARKERS = ("401", "403", "forbidden", "unauthor", "cloudflare", "cf_clearance", "expired")
@@ -457,14 +458,21 @@ def _run_autonomous_steps() -> None:
     _inproc_step("autotag", _do_autotag)
 
 
-def _sync_worker() -> None:
+def _sync_worker(only: str | None = None) -> None:
+    """The full sync pipeline. ``only`` limits download/agents/conversations to that one
+    account (paused or not — it was asked for by name); reindex, index, motion cache and
+    the Autonomous Mode post-steps run exactly as in a full sync."""
     py = sys.executable
     cli = str(ROOT / "grokive.py")
-    active = [a for a in _load_accounts() if a.get("active")]
+    if only is not None:
+        active = [a for a in _load_accounts() if a["id"] == only]
+    else:
+        active = [a for a in _load_accounts() if a.get("active")]
     # With several accounts each step label carries the account name — " [Name]" —
     # which the UI splits back apart for the status pill and the Summary view. The
-    # name is kept out of the "label: command" framing separator (no colons).
-    multi = len(active) > 1
+    # name is kept out of the "label: command" framing separator (no colons). A
+    # single-account sync always names its account so the pill/log say which one.
+    multi = len(active) > 1 or only is not None
     rc = 0
     try:
         # Reindex FIRST so any media that exists on disk but is missing from
@@ -478,7 +486,10 @@ def _sync_worker() -> None:
         # A failing account is logged and skipped so the remaining accounts still
         # sync; the whole job then finishes as an error to surface the failure.
         failures = 0
-        if not active:
+        if only is not None and not active:
+            _log(f"account '{only}' no longer exists — nothing to download")
+            failures += 1
+        elif not active:
             _log("no active Grok accounts — skipping download/agents (add one in Config)")
         for acct in active:
             tag = f" [{acct['name'].replace(':', ' ')}]" if multi else ""
@@ -576,6 +587,7 @@ def start_attribute(ids: list[str] | None = None) -> bool:
             return False
         _sync["running"] = True
         _sync["job"] = "attribute"
+        _sync["account"] = None
         _sync["step"] = "attribute"
         _sync["returncode"] = None
         _sync["auth_hint"] = False
@@ -587,12 +599,15 @@ def start_attribute(ids: list[str] | None = None) -> bool:
     return True
 
 
-def start_sync() -> bool:
+def start_sync(account: dict | None = None) -> bool:
+    """Start the sync job (every active account, or just ``account``). False when the
+    shared job slot is busy."""
     with _sync_lock:
         if _sync["running"]:
             return False
         _sync["running"] = True
         _sync["job"] = "sync"
+        _sync["account"] = {"id": account["id"], "name": account["name"]} if account else None
         _sync["step"] = "download"
         _sync["returncode"] = None
         _sync["auth_hint"] = False
@@ -600,7 +615,8 @@ def start_sync() -> bool:
         _sync["finished_at"] = None
         _sync["media_ready_at"] = None
         _sync["log"].clear()
-    threading.Thread(target=_sync_worker, daemon=True).start()
+    threading.Thread(target=_sync_worker, args=(account["id"] if account else None,),
+                     daemon=True).start()
     return True
 
 
@@ -1031,6 +1047,7 @@ def start_subtitles() -> bool:
             return False
         _sync["running"] = True
         _sync["job"] = "subtitles"
+        _sync["account"] = None
         _sync["step"] = "scanning"
         _sync["returncode"] = None
         _sync["auth_hint"] = False
@@ -1067,6 +1084,7 @@ def start_motioncache() -> bool:
             return False
         _sync["running"] = True
         _sync["job"] = "motioncache"
+        _sync["account"] = None
         _sync["step"] = "motioncache"
         _sync["returncode"] = None
         _sync["auth_hint"] = False
@@ -1295,8 +1313,23 @@ def covers(mid: str) -> Response:
     abort(404)
 
 
+def _sync_one_account(acct_id: str) -> Response:
+    acct = next((a for a in _load_accounts() if a["id"] == acct_id), None)
+    if acct is None:
+        return jsonify(ok=False, error="No such account."), 404
+    if not _account_configured(acct_id):
+        return jsonify(ok=False, error="This account has no saved cURL session — paste one first."), 400
+    if start_sync(acct):
+        return jsonify(ok=True, account={"id": acct["id"], "name": acct["name"]})
+    return jsonify(ok=False, error="Another job is already running"), 409
+
+
 @app.post("/api/sync")
 def api_sync() -> Response:
+    """Full sync; ``{account: id}`` syncs just that account (same pipeline + job slot)."""
+    acct_id = str((request.get_json(silent=True) or {}).get("account") or "").strip()
+    if acct_id:
+        return _sync_one_account(acct_id)
     if start_sync():
         return jsonify(ok=True)
     return jsonify(ok=False, error="Sync already running"), 409
@@ -1320,6 +1353,7 @@ def api_sync_status() -> Response:
         finished_at=snap["finished_at"],
         media_ready_at=snap["media_ready_at"],
         auth_hint=snap["auth_hint"],
+        account=snap.get("account"),
         log=log_tail,
     )
 
@@ -1557,8 +1591,100 @@ def _account_summary(acct: dict) -> dict:
             mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
         except OSError:
             pass
+    with _auth_check_lock:
+        last_check = _auth_checks.get(acct["id"])
     return {"id": acct["id"], "name": acct["name"], "active": acct["active"],
-            "configured": configured, "mtime": mtime}
+            "configured": configured, "mtime": mtime, "last_check": last_check}
+
+
+# Last "Check auth" result per account (in memory; a restart just forgets them). Holds
+# only {ok, status, message, checked_at} — never anything from the session itself.
+_auth_check_lock = threading.Lock()
+_auth_checks: dict[str, dict] = {}
+
+
+def _check_account_auth(acct_id: str) -> dict:
+    """Test one account's saved cURL session with a single lightweight authenticated
+    request — the same /rest/media/post/list call Sync opens with, asking for one post —
+    and classify the answer. Never raises; never puts cookies or headers in the result."""
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def out(ok: bool, status, message: str) -> dict:
+        return {"ok": ok, "status": status, "message": message, "checked_at": stamp}
+
+    if not _account_configured(acct_id):
+        return out(False, "no-session", "No saved session — paste the account's cURL")
+    spec = _account_auth_spec(acct_id)
+    if spec is None:
+        return out(False, "unreadable", "Saved cURL couldn't be parsed — paste a fresh one")
+    if not spec.cookies:
+        return out(False, "no-cookies", "Saved cURL has no cookies — copy it again while signed in")
+    probe = gdownloader.grok_favorites_spec(spec, 1)
+    # Same header hygiene as gdownloader.request_json (drop accept-encoding so httpx only
+    # advertises codings it can decode).
+    headers = {k: v for k, v in probe.headers_with_cookies().items()
+               if k.lower() not in ("accept-encoding", "content-length")}
+    try:
+        resp = httpx.post(probe.url, headers=headers, content=probe.body, timeout=20)
+    except httpx.TimeoutException:
+        return out(False, "network", "Network error — Grok didn't answer in time")
+    except Exception as exc:  # noqa: BLE001 - classified, never echoed verbatim
+        return out(False, "network", f"Network error ({type(exc).__name__}) — check the server's connection")
+    code = resp.status_code
+    if code == 401:
+        return out(False, 401, "Expired / 401 — paste a fresh cURL")
+    if code == 403:
+        body = (resp.text or "")[:4000].lower()
+        cf = (resp.headers.get("cf-mitigated") or "").lower() == "challenge" or any(
+            m in body for m in ("just a moment", "cf-chl", "challenge-platform", "cloudflare"))
+        if cf:
+            return out(False, 403, "Blocked by Cloudflare (403) — refresh grok.com in your browser "
+                                   "and paste a fresh cURL (new cf_clearance)")
+        return out(False, 403, "Forbidden / 403 — session rejected; paste a fresh cURL")
+    if code == 429:
+        return out(False, 429, "Rate limited (429) — try again in a few minutes")
+    if code != 200:
+        return out(False, code, f"Unexpected HTTP {code} from Grok")
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        return out(False, 200, "Grok answered but not with JSON — the session may be signed out")
+    if not isinstance(data, (dict, list)):
+        return out(False, 200, "Unexpected response from Grok")
+    return out(True, 200, "Session OK")
+
+
+def _record_auth_check(acct_id: str, result: dict) -> dict:
+    with _auth_check_lock:
+        _auth_checks[acct_id] = result
+    return result
+
+
+@app.post("/api/accounts/<acct_id>/check")
+def api_accounts_check_one(acct_id: str) -> Response:
+    """Check one account's saved session against Grok (no downloads)."""
+    if not any(a["id"] == acct_id for a in _load_accounts()):
+        return jsonify(ok=False, error="No such account."), 404
+    result = _record_auth_check(acct_id, _check_account_auth(acct_id))
+    return jsonify(id=acct_id, **result)
+
+
+@app.post("/api/accounts/check")
+def api_accounts_check_all() -> Response:
+    """Check every account's saved session concurrently."""
+    accounts = _load_accounts()
+    if not accounts:
+        return jsonify(results=[])
+    with ThreadPoolExecutor(max_workers=min(4, len(accounts))) as pool:
+        results = list(pool.map(lambda a: _check_account_auth(a["id"]), accounts))
+    return jsonify(results=[{"id": a["id"], **_record_auth_check(a["id"], r)}
+                            for a, r in zip(accounts, results)])
+
+
+@app.post("/api/accounts/<acct_id>/sync")
+def api_accounts_sync_one(acct_id: str) -> Response:
+    """Run the normal sync pipeline for just this account (409 when a job is running)."""
+    return _sync_one_account(acct_id)
 
 
 @app.get("/api/accounts")
@@ -1632,6 +1758,8 @@ def api_accounts_update(acct_id: str) -> Response:
             acct["active"] = bool(payload.get("active"))
         if curl.strip():
             _write_account_curl(acct_id, curl)
+            with _auth_check_lock:  # a fresh session makes the old verdict stale
+                _auth_checks.pop(acct_id, None)
         acct["updated_at"] = _utc_stamp()
         _save_accounts(accounts)
     return jsonify(ok=True, account=_account_summary(acct))
@@ -1652,6 +1780,8 @@ def api_accounts_delete(acct_id: str) -> Response:
             except OSError:
                 pass
         _save_accounts(keep)
+    with _auth_check_lock:
+        _auth_checks.pop(acct_id, None)
     return jsonify(ok=True)
 
 

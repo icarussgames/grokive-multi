@@ -105,6 +105,15 @@ without downloading anything, use **Re-attribute accounts…** in that menu, or 
 `python grokive.py attribute --curl grok_accounts/<id>.txt --account <id>` per extra
 account, then `python grokive.py index`. Items Grok no longer lists stay *Unknown*.
 
+**Per-account check & sync.** In Config → Grok accounts each account with a saved
+session has a **Check** button (one lightweight authenticated request to Grok —
+nothing downloaded — reporting *Session OK*, *Expired / 401 — paste a fresh cURL*, a
+Cloudflare/`cf_clearance` 403, rate limiting or a network error, with the time of the
+check; **Check all** tests every account at once) and a **sync** button that runs the
+normal Sync pipeline for just that account, even a paused one (`POST
+/api/accounts/<id>/sync`, or `POST /api/sync` with `{"account": "<id>"}`; one job at a
+time, so it answers 409 while another runs). Checks never log or return cookie values.
+
 All state (`grok_auth.txt` + `grok_accounts.json`/`grok_accounts/` (Grok account
 sessions), `metadata.json`, `index.db` (the derived SQLite
 read-model), `library.json` (favorites/archive), `deleted_ids.json` (delete blocklist),

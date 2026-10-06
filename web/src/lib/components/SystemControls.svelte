@@ -50,12 +50,13 @@
       mediaRefreshed = false;
       const subs = status.job === 'subtitles';
       const attr = status.job === 'attribute';
+      const who = status.account?.name ? ` — ${status.account.name}` : '';
       loadGrokAccounts(); // a sync may follow an account rename/add in Config
       if (status.step === 'done') {
         onrefresh();
-        toast(subs ? 'Subtitles generated' : attr ? 'Accounts attributed' : 'Sync complete', { type: 'success' });
+        toast(subs ? 'Subtitles generated' : attr ? 'Accounts attributed' : `Sync complete${who}`, { type: 'success' });
       } else if (status.step === 'error') {
-        toast(status.auth_hint ? 'Sync failed — check your Grok auth' : `${subs ? 'Subtitles' : attr ? 'Re-attribution' : 'Sync'} failed`, { type: 'error' });
+        toast(status.auth_hint ? `Sync failed${who} — check your Grok auth` : `${subs ? 'Subtitles' : attr ? 'Re-attribution' : 'Sync'} failed${who}`, { type: 'error' });
         showLog = true; // surface the log so the failure detail is one glance away
       }
     }
@@ -92,8 +93,12 @@
   const withAccount = (label, acct) => (acct ? `${label} · ${acct}` : label);
   const stepLabel = (s) => { const [base, acct] = stepParts(s); return withAccount(STEP_LABELS[base] || base, acct); };
   const stepTitle = (name) => { const [base, acct] = stepParts(name); return withAccount(STEP_LABELS[base] || title(base), acct); };
+  // A single-account sync names the account once, up front ("Syncing Personal: download"),
+  // instead of only on the per-account steps.
+  const soloName = $derived(status.job === 'sync' && status.account?.name ? status.account.name : '');
+  const pillStep = (s) => { const [base, acct] = stepParts(s); return soloName ? (STEP_LABELS[base] || base) : withAccount(STEP_LABELS[base] || base, acct); };
   const pillText = $derived(
-    status.running ? `${status.job === 'subtitles' ? 'Subtitles' : status.job === 'attribute' ? 'Attributing' : 'Syncing'}: ${stepLabel(status.step)}`
+    status.running ? `${status.job === 'subtitles' ? 'Subtitles' : status.job === 'attribute' ? 'Attributing' : soloName ? `Syncing ${soloName}` : 'Syncing'}: ${pillStep(status.step)}`
       : status.step === 'error' ? (status.auth_hint ? 'Auth failed' : 'Failed')
       : status.step === 'done' ? 'Synced' : 'Ready'
   );
