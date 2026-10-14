@@ -226,7 +226,10 @@ def test_server_passes_deep_to_the_conversations_step_only(monkeypatch):
     server._sync_worker(None, True)
     conv = [a for a in calls if a[2] == "conversations"]
     assert conv and "--deep" in conv[0]
-    assert all("--deep" not in a for a in calls if a[2] != "conversations")
+    # Chat backup is part of Deep sync too (re-reads every chat).
+    chats = [a for a in calls if a[2] == "chats"]
+    assert chats and "--deep" in chats[0]
+    assert all("--deep" not in a for a in calls if a[2] not in ("conversations", "chats"))
     calls.clear()
     server._sync_worker("default")
     assert all("--deep" not in a for a in calls)

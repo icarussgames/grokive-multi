@@ -44,6 +44,7 @@
   import ScrollToTop from '$lib/components/ScrollToTop.svelte';
   import PromptStudio from '$lib/components/PromptStudio.svelte';
   import ImagineStudio from '$lib/components/ImagineStudio.svelte';
+  import ChatsView from '$lib/components/ChatsView.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import Toaster from '$lib/components/Toaster.svelte';
 
@@ -247,7 +248,7 @@
     if (next !== sig) {
       sig = next;
       // Studio is an authoring tool, not a media view — no fetch to make.
-      if ($filters.view === 'studio' || $filters.view === 'imagine') return;
+      if ($filters.view === 'studio' || $filters.view === 'imagine' || $filters.view === 'chats') return;
       if (!activeCollection) load(true);
       if (!activeCollection || $filters.view !== 'collections') refreshFacets();
     }
@@ -326,7 +327,7 @@
     const n = $galleryReload;
     if (n === _reloadSig) return;
     _reloadSig = n;
-    if (n === 0 || $filters.view === 'studio' || $filters.view === 'imagine') return;
+    if (n === 0 || $filters.view === 'studio' || $filters.view === 'imagine' || $filters.view === 'chats') return;
     if (activeCollection) loadCollectionItems(activeCollection, true);
     else load(true);
     refreshFacets();
@@ -831,7 +832,7 @@
 <div class="flex">
   <!-- Studio is its own full-width workspace; the media-browsing sidebar (filters,
        playlists) doesn't apply there, so hide it for that view. -->
-  {#if $filters.view !== 'studio' && $filters.view !== 'imagine' && !onCollectionsLanding}
+  {#if $filters.view !== 'studio' && $filters.view !== 'imagine' && $filters.view !== 'chats' && !onCollectionsLanding}
     <!-- Sticky filter rail: the WINDOW scrolls the gallery (the infinite-scroll sentinel
          observes the viewport), so the rail pins under the top bar (--topbar-h, measured in
          TopBar) and scrolls on its own; overscroll-contain stops it chaining into the page. -->
@@ -1172,6 +1173,8 @@
       <PromptStudio />
     {:else if $filters.view === 'imagine'}
       <ImagineStudio />
+    {:else if $filters.view === 'chats'}
+      <ChatsView />
     {:else}
       <div class="mb-3 flex flex-wrap items-center gap-3">
         <p class="text-sm text-muted">{displayTotal.toLocaleString()} {$filters.view === 'favorites' ? 'favorites' : $filters.view === 'archive' ? 'archived' : $filters.view === 'all' ? 'items' : 'recent items'}</p>

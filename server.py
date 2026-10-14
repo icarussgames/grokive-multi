@@ -518,6 +518,10 @@ def _sync_worker(only: str | None = None, deep: bool = False) -> None:
                 # Grok collections -> grok:<name> tags (no downloads). Opt-in (Settings →
                 # Automation); best-effort: a failure is logged but never fails the sync.
                 _run_step(f"collections{tag}", [py, cli, "collections", *acct_args])
+            if acct_rc == 0 and _chat_sync_enabled():
+                # Normal Grok chats (text) -> chats/<account>/*.json + chats.db search index.
+                # Best-effort: a chat failure is logged but never fails the media sync.
+                _run_step(f"chats{tag}", [py, cli, "chats", *acct_args, *(["--deep"] if deep else [])])
             if acct_rc != 0:
                 failures += 1
                 rc = acct_rc
@@ -656,6 +660,11 @@ def _whisper_url() -> str:
 
 def _burn_enabled() -> bool:
     return bool(_load_settings().get("burn_subtitles"))
+
+
+def _chat_sync_enabled() -> bool:
+    """Back up normal Grok chats during Sync (default ON; Config → Automation)."""
+    return _load_settings().get("chat_sync_enabled", True) is not False
 
 
 def _grok_collections_enabled() -> bool:
@@ -1404,6 +1413,7 @@ def api_settings_get() -> Response:
         burn_subtitles=bool(settings.get("burn_subtitles")),
         autonomous_mode=bool(settings.get("autonomous_mode")),
         grok_collections_enabled=bool(settings.get("grok_collections_enabled")),
+        chat_sync_enabled=settings.get("chat_sync_enabled", True) is not False,
         subtitle_font=str(settings.get("subtitle_font") or "system"),
         subtitle_size=_sub_size(settings.get("subtitle_size")),
         subtitle_color=_sub_color(settings.get("subtitle_color")),
@@ -1456,6 +1466,8 @@ def api_settings_post() -> Response:
         settings["burn_subtitles"] = bool(payload.get("burn_subtitles"))
     if "autonomous_mode" in payload:
         settings["autonomous_mode"] = bool(payload.get("autonomous_mode"))
+    if "chat_sync_enabled" in payload:
+        settings["chat_sync_enabled"] = bool(payload.get("chat_sync_enabled"))
     if "grok_collections_enabled" in payload:
         settings["grok_collections_enabled"] = bool(payload.get("grok_collections_enabled"))
     # Subtitle display style (player ::cue + burned-in export). Font is restricted
@@ -5740,6 +5752,68 @@ def _period_range(period: str, tz_offset: int | None = None) -> tuple[str | None
     return None, None
 
 
+# --------------------------------------------------------------------------- #
+# Grok chats (normal text conversations) — archive written by grokchats.py
+# --------------------------------------------------------------------------- #
+
+_chat_index_lock = threading.Lock()
+_YEAR_PERIOD_RE = re.compile(r"^y:(\d{4})$")
+
+
+def _chat_db() -> Path:
+    import grokchats
+    with _chat_index_lock:
+        return grokchats.ensure_index(DATA_DIR)
+
+
+def _chat_period(period: str, tz: int | None) -> tuple[str | None, str | None]:
+    m = _YEAR_PERIOD_RE.match(period or "")
+    if m:
+        y = int(m.group(1))
+        s, _ = _period_range(f"m:{y:04d}-01", tz)
+        e, _ = _period_range(f"m:{y + 1:04d}-01", tz) if y < 9999 else (None, None)
+        return s, e
+    return _period_range(period or "all", tz)
+
+
+@app.get("/api/chats")
+def api_chats() -> Response:
+    """Archived Grok chats: ?q= full-text (titles + messages, highlighted snippets),
+    ?account=, ?period= (same ids as the media Date filter, plus y:YYYY), ?sort=new|old|updated|title."""
+    import grokchats
+    db_path = _chat_db()
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        size = max(1, min(200, int(request.args.get("page_size", 50))))
+    except ValueError:
+        page, size = 1, 50
+    start, end = _chat_period(request.args.get("period", "all"), _tz_offset_arg())
+    account = (request.args.get("account") or "").strip()
+    res = grokchats.search(db_path, q=request.args.get("q", ""),
+                           account=None if account in ("", "all") else account,
+                           start=start, end=end, sort=request.args.get("sort", "new"),
+                           limit=size, offset=(page - 1) * size)
+    return jsonify(total=res["total"], items=res["items"], page=page, page_size=size,
+                   hl=[grokchats.HL_OPEN, grokchats.HL_CLOSE])
+
+
+@app.get("/api/chats/months")
+def api_chats_months() -> Response:
+    import grokchats
+    account = (request.args.get("account") or "").strip()
+    return jsonify(months=grokchats.months(_chat_db(), None if account in ("", "all") else account,
+                                           _tz_offset_arg() or 0))
+
+
+@app.get("/api/chats/<account>/<conv_id>")
+def api_chat_get(account: str, conv_id: str) -> Response:
+    import grokchats
+    doc = grokchats.load_conversation(DATA_DIR, account, conv_id)
+    if doc is None:
+        return jsonify(ok=False, error="Not found"), 404
+    return jsonify(doc)
+
+
 def _all_collected_ids() -> set[str]:
     """Union of EVERY collection's media ids — nested sub-collections included (they
     are ordinary records in the same flat list), locked collections too: this set is
@@ -7948,7 +8022,22 @@ def _prune_motion_cache() -> None:
         print(f"motion cache prune skipped: {exc}")
 
 
+def _probe_chats(account: str) -> int:
+    """`python server.py --probe-chats <account>`: dump one page of raw Grok chat API
+    responses to DATA_DIR/chat_probe_<account>.json (read-only GETs; no server start)."""
+    if not _account_configured(account):
+        print(f"account '{account}' has no saved cURL session ({_account_curl_path(account)})")
+        return 1
+    cmd = [sys.executable, str(ROOT / "grokchats.py"), "probe", "--curl", _account_curl_rel(account),
+           "--account", account]
+    return subprocess.call(cmd, cwd=str(DATA_DIR), env=dict(os.environ, GROK_DATA_DIR=str(DATA_DIR)))
+
+
 def main() -> None:
+    if "--probe-chats" in sys.argv:
+        i = sys.argv.index("--probe-chats")
+        acct = sys.argv[i + 1] if i + 1 < len(sys.argv) else "default"
+        raise SystemExit(_probe_chats(acct))
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     _seed_collection_groups_once()
     _prune_motion_cache()

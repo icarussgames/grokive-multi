@@ -692,3 +692,22 @@ export async function login(username, password) {
   return { ok: false, error: data.error || 'Login failed.' };
 }
 export const logout = () => fetch('/api/logout', { method: 'POST' }).catch(() => {});
+
+// ---- Archived Grok chats (grokchats.py) ----
+export function fetchChats({ q = '', account = 'all', period = 'all', sort = 'new', page = 1, pageSize = 50 } = {}) {
+  const p = new URLSearchParams();
+  if (q) p.set('q', q);
+  if (account && account !== 'all') p.set('account', account);
+  if (period && period !== 'all') p.set('period', period);
+  p.set('tz_offset', String(-new Date().getTimezoneOffset()));
+  p.set('sort', sort);
+  p.set('page', String(page));
+  p.set('page_size', String(pageSize));
+  return getJSON(`/api/chats?${p.toString()}`);
+}
+export function fetchChatMonths(account = 'all') {
+  const p = new URLSearchParams({ tz_offset: String(-new Date().getTimezoneOffset()) });
+  if (account && account !== 'all') p.set('account', account);
+  return getJSON(`/api/chats/months?${p.toString()}`);
+}
+export const fetchChat = (account, id) => getJSON(`/api/chats/${encodeURIComponent(account)}/${encodeURIComponent(id)}`);

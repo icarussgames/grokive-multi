@@ -199,6 +199,17 @@ def main() -> int:
     collections.add_argument("--account", default=None,
                              help="Account id the collections belong to (default: derived from --curl; grok_auth.txt = 'default').")
 
+    chats = sub.add_parser(
+        "chats",
+        help="Back up the account's normal Grok chats (text conversations) to chats/<account>/ "
+             "and rebuild the chat search index (chats.db).",
+    )
+    chats.add_argument("--curl", default=default_curl())
+    chats.add_argument("--account", default=None)
+    chats.add_argument("--deep", action="store_true", help="Re-read every chat, ignoring stored modifyTimes.")
+    chats.add_argument("--probe", action="store_true",
+                       help="Instead of syncing, dump one page of raw chat API responses to chat_probe_<account>.json.")
+
     sub.add_parser("index", help="Generate missing thumbnails and (re)build the SQLite index (index.db) the web UI queries.")
 
     sub.add_parser("motioncache", help="Pre-analyze library videos' motion into the montage cache (speeds up Beat Montage; powers Auto Montage clip picking).")
@@ -245,6 +256,13 @@ def main() -> int:
         ]
         if not args.verbose:
             cmd.append("--quiet")
+        return run(cmd)
+    if args.command == "chats":
+        cmd = [sys.executable, script("grokchats.py"), "probe" if args.probe else "sync", "--curl", args.curl]
+        if args.account:
+            cmd += ["--account", args.account]
+        if args.deep and not args.probe:
+            cmd.append("--deep")
         return run(cmd)
     if args.command == "attribute":
         return attribute_account(args)

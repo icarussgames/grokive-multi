@@ -70,7 +70,8 @@
   const searchInert = $derived(
     ($filters.view === 'collections' && !$activeCollectionId) ||
     $filters.view === 'studio' ||
-    $filters.view === 'imagine'
+    $filters.view === 'imagine' ||
+    $filters.view === 'chats'
   );
   // Enter flushes the debounce immediately. From a search-inert context it also jumps to
   // All Media so the matches actually render as a grid instead of doing nothing.
@@ -264,6 +265,15 @@
           onclick={() => setView('imagine')}>
           <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M15 9h.01"/><path d="m3 21 9-9"/><path d="M12.2 6.2 11 5"/></svg>
           <span aria-hidden="true" class="hidden sm:inline">Imagine</span>
+        </button>
+        <button type="button"
+          class="topbar-workspace inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 py-1.5 text-sm font-bold transition {$filters.view === 'chats' ? 'topbar-workspace-active border-transparent bg-[var(--accent)] text-[var(--on-accent)]' : 'border-line text-muted'}"
+          aria-label="Open archived Grok chats"
+          aria-current={$filters.view === 'chats' ? 'page' : undefined}
+          title="Grok chats — search your archived text conversations"
+          onclick={() => setView('chats')}>
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span aria-hidden="true" class="hidden sm:inline">Chats</span>
         </button>
       </div>
       <span class="mx-0.5 hidden h-6 w-px self-center bg-line sm:block" aria-hidden="true"></span>

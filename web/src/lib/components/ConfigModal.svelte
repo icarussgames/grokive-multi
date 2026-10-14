@@ -65,6 +65,7 @@
   let burn = $state(false);
   let autonomous = $state(false);
   let grokCollections = $state(false);
+  let chatSync = $state(true);
   let showAutonomousInfo = $state(false);
   let llmProvider = $state('local');
   let llmUrl = $state('');
@@ -149,6 +150,7 @@
       burn = !!s.burn_subtitles;
       autonomous = !!s.autonomous_mode;
       grokCollections = !!s.grok_collections_enabled;
+      chatSync = s.chat_sync_enabled !== false;
       llmProvider = s.llm_provider || providerFromUrl(s.llm_server_url);
       llmUrl = s.llm_server_url || '';
       llmModel = s.llm_model || '';
@@ -404,7 +406,7 @@
 
   async function save() {
     msg = 'Saving…'; msgClass = '';
-    const body = { burn_subtitles: burn, autonomous_mode: autonomous, grok_collections_enabled: grokCollections };
+    const body = { burn_subtitles: burn, autonomous_mode: autonomous, grok_collections_enabled: grokCollections, chat_sync_enabled: chatSync };
     if (!envLocked) body.whisper_server_url = whisper.trim();
     body.llm_provider = llmProvider;
     body.embed_provider = embedProvider;
@@ -967,6 +969,13 @@
           {#if showAutonomousInfo}
             <p class="mt-2 text-xs text-muted">After each Sync, automatically update the prompt index, import new prompts into your library, generate subtitles for any videos still missing them (when a subtitle endpoint is configured), and AI-tag the newly imported prompts (when an AI provider is configured). Existing prompts are never re-tagged. Progress shows in the Sync status pill.</p>
           {/if}
+          <label class="mt-3 flex cursor-pointer items-start gap-2 text-sm">
+            <input type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]" bind:checked={chatSync} />
+            <span>
+              <span class="font-semibold">Back up Grok chats on Sync</span>
+              <span class="block text-xs text-muted">Also saves each account's normal (text) Grok conversations so you can search them under <b>Chats</b>. Only new/changed chats are read; Deep sync re-reads all. Never affects the media sync.</span>
+            </span>
+          </label>
           <label class="mt-3 flex cursor-pointer items-start gap-2 text-sm">
             <input type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]" bind:checked={grokCollections} />
             <span>

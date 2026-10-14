@@ -96,6 +96,23 @@ cd grokive-multi
   later) are only picked up by a deep sync — run one now and then. Favorites and Agent
   canvases are still listed in full on every sync.
 
+### Grok chat backup & search
+
+Besides Imagine media, Sync now also backs up each account's **normal Grok chats** (text conversations), so old chats are easy to find again.
+
+- **Where:** one JSON file per conversation in `data/chats/<account>/<conversation id>.json` (title, created/updated time, every message with sender, text, time, model and any attached/generated image refs), plus a SQLite FTS5 search index `data/chats.db` (rebuilt automatically when new chats land).
+- **Incremental:** like Imagine conversations, only chats that are new or whose `modifyTime` changed are re-read (`data/chat_state.json`); **Deep sync** re-reads all of them. Failed chats are retried next sync.
+- **Separate, best-effort step:** runs as a `chats` step per account right after the media steps. A chat failure is logged but never fails the media sync. Toggle: **Config → Automation → "Back up Grok chats on Sync"** (on by default).
+- **UI:** the **Chats** button in the top bar. Full-text search over titles and messages (all words must match, prefix matching, `"exact phrase"` supported) with highlighted snippets; account filter; **Date** filter (quick periods, whole year, or a month picker with per-month counts); sort by newest / oldest / recently updated / title; results grouped by month. Open a chat to read it, **Copy** any message or prompt, or **Open on grok.com** (`https://grok.com/c/<id>`).
+- **CLI:** `python grokive.py chats --curl grok_accounts/<id>.txt --account <id> [--deep]` (run from the data dir like the other steps), or `python grokchats.py index` to rebuild the search index.
+- **Checking the API shape:** the chat endpoints are read with GET only (`/rest/app-chat/conversations` without the Imagine `kind` filter, then `/conversations/<id>/responses`, falling back to `/response-node` + `/load-responses`). If chats come back empty or oddly parsed, run a probe and look at (or share) the dump:
+
+  ```
+  python server.py --probe-chats <account id>
+  ```
+
+  It writes `data/chat_probe_<account>.json` with one raw listing page, the raw message responses of the newest chat, and what Grokive parsed from them. It doesn't start the server, and it contains your chat text (but no cookies), so share it with care.
+
 ### Date navigation
 
 - A **Date** section at the top of the left filter panel: *All time*, *Last 30 days*,
