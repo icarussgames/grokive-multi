@@ -480,11 +480,142 @@ def fts_query(q: str) -> str:
 HL_OPEN, HL_CLOSE = "\u0001", "\u0002"
 
 
+# --------------------------------------------------------------------------- #
+# User metadata (tags, archived) — chat_meta.json, never touched by sync
+#
+# {"version": 1, "chats": {"<account>/<conversation id>": {"tags": [...], "archived": true}}}
+# --------------------------------------------------------------------------- #
+
+META_FILE = Path("chat_meta.json")
+TAG_RE = re.compile(r"(?:^|\s)#([^\s#]+)")
+
+
+def meta_key(account: str, conv_id: str) -> str:
+    return f"{account}/{conv_id}"
+
+
+def norm_tag(t: Any) -> str:
+    return re.sub(r"\s+", " ", str(t or "")).strip()[:64]
+
+
+def load_meta(path: Path) -> dict:
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"version": 1, "chats": {}}
+    chats = d.get("chats") if isinstance(d, dict) else None
+    out: dict[str, dict] = {}
+    for k, v in (chats or {}).items() if isinstance(chats, dict) else []:
+        if not isinstance(v, dict) or "/" not in str(k):
+            continue
+        tags = sorted({norm_tag(t) for t in v.get("tags") or [] if norm_tag(t)}, key=str.lower)
+        rec = {}
+        if tags:
+            rec["tags"] = tags
+        if v.get("archived"):
+            rec["archived"] = True
+        if rec:
+            out[str(k)] = rec
+    return {"version": 1, "chats": out}
+
+
+def save_meta(path: Path, meta: dict) -> None:
+    g._atomic_write_text(path, json.dumps(meta, ensure_ascii=False, indent=1, sort_keys=True))
+
+
+def update_meta(meta: dict, keys: list[str], add=(), remove=(), archived: bool | None = None) -> int:
+    add = [norm_tag(t) for t in add if norm_tag(t)]
+    rem = {norm_tag(t).lower() for t in remove if norm_tag(t)}
+    n = 0
+    for k in keys:
+        rec = dict(meta["chats"].get(k) or {})
+        tags = {t for t in rec.get("tags", []) if t.lower() not in rem}
+        low = {t.lower() for t in tags}
+        tags |= {t for t in add if t.lower() not in low}
+        rec["tags"] = sorted(tags, key=str.lower)
+        if archived is not None:
+            rec["archived"] = bool(archived)
+        rec = {k2: v for k2, v in rec.items() if v}
+        if rec:
+            meta["chats"][k] = rec
+        else:
+            meta["chats"].pop(k, None)
+        n += 1
+    return n
+
+
+def split_query(q: str) -> tuple[str, list[str]]:
+    """'#work pelicans' -> ('pelicans', ['work']): #tags in the search box filter by tag."""
+    tags = [norm_tag(t) for t in TAG_RE.findall(q or "")]
+    return TAG_RE.sub(" ", q or "").strip(), [t for t in tags if t]
+
+
+def _load_meta_tables(con, meta: dict | None) -> None:
+    con.execute("CREATE TEMP TABLE IF NOT EXISTS marc(account TEXT, id TEXT, PRIMARY KEY(account, id))")
+    con.execute("CREATE TEMP TABLE IF NOT EXISTS mtag(account TEXT, id TEXT, tag TEXT)")
+    con.execute("DELETE FROM marc"); con.execute("DELETE FROM mtag")
+    for k, v in ((meta or {}).get("chats") or {}).items():
+        acct, _, cid = k.partition("/")
+        if v.get("archived"):
+            con.execute("INSERT OR IGNORE INTO marc VALUES(?,?)", (acct, cid))
+        for t in v.get("tags") or []:
+            con.execute("INSERT INTO mtag VALUES(?,?,?)", (acct, cid, t.lower()))
+
+
+def _meta_where(archived: str, tags: list[str], tag_mode: str, where: list, args: list) -> None:
+    arch = "EXISTS(SELECT 1 FROM marc a WHERE a.account=c.account AND a.id=c.id)"
+    if archived == "archived":
+        where.append(arch)
+    elif archived != "all":
+        where.append("NOT " + arch)
+    tl = sorted({t.lower() for t in tags if t})
+    if tl:
+        ph = ",".join("?" * len(tl))
+        if tag_mode == "all":
+            where.append(f"(SELECT count(DISTINCT tag) FROM mtag t WHERE t.account=c.account AND t.id=c.id AND t.tag IN ({ph})) = ?")
+            args.extend([*tl, len(tl)])
+        else:
+            where.append(f"EXISTS(SELECT 1 FROM mtag t WHERE t.account=c.account AND t.id=c.id AND t.tag IN ({ph}))")
+            args.extend(tl)
+
+
+def facets(db_path: Path, meta: dict | None = None, archived: str = "active", account: str | None = None) -> dict:
+    """Account counts (ignoring the account filter) and tag counts (within it) for an archive mode."""
+    con = sqlite3.connect(db_path)
+    try:
+        _load_meta_tables(con, meta)
+        where, args = [], []
+        _meta_where(archived, [], "any", where, args)
+        w = ("WHERE " + " AND ".join(where)) if where else ""
+        accts = [{"id": a, "count": n} for a, n in con.execute(
+            f"SELECT c.account, count(*) FROM conv c {w} GROUP BY c.account ORDER BY c.account", args)]
+        if account:
+            where.append("c.account = ?"); args.append(account)
+        w = ("WHERE " + " AND ".join(where)) if where else ""
+        names: dict[str, str] = {}
+        for v in ((meta or {}).get("chats") or {}).values():
+            for t in v.get("tags") or []:
+                names.setdefault(t.lower(), t)
+        tags = [{"name": names.get(t, t), "count": n} for t, n in con.execute(
+            f"SELECT t.tag, count(DISTINCT c.account || '/' || c.id) FROM conv c JOIN mtag t "
+            f"ON t.account=c.account AND t.id=c.id {w} GROUP BY t.tag ORDER BY t.tag", args)]
+        archived_n = con.execute("SELECT count(*) FROM conv c JOIN marc a ON a.account=c.account AND a.id=c.id"
+                                 + (" WHERE c.account = ?" if account else ""), [account] if account else []).fetchone()[0]
+        return {"accounts": accts, "tags": tags, "archived": archived_n}
+    finally:
+        con.close()
+
+
 def search(db_path: Path, q: str = "", account: str | None = None, start: str | None = None,
-           end: str | None = None, sort: str = "new", limit: int = 50, offset: int = 0) -> dict:
+           end: str | None = None, sort: str = "new", limit: int = 50, offset: int = 0,
+           meta: dict | None = None, archived: str = "all", tags: list[str] | None = None,
+           tag_mode: str = "any") -> dict:
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     where, args = [], []
+    q, qtags = split_query(q)
+    _load_meta_tables(con, meta)
+    _meta_where(archived, [*(tags or []), *qtags], "all" if qtags else tag_mode, where, args)
     if account:
         where.append("c.account = ?"); args.append(account)
     if start:
@@ -517,6 +648,9 @@ def search(db_path: Path, q: str = "", account: str | None = None, start: str | 
         items = []
         for r in rows:
             it = dict(r)
+            m = ((meta or {}).get("chats") or {}).get(meta_key(r["account"], r["id"])) or {}
+            it["tags"] = m.get("tags", [])
+            it["archived"] = bool(m.get("archived"))
             if by_conv:
                 hs = by_conv.get((r["account"], r["id"]), [])
                 it["hits"] = len(hs)
@@ -527,12 +661,17 @@ def search(db_path: Path, q: str = "", account: str | None = None, start: str | 
         con.close()
 
 
-def months(db_path: Path, account: str | None = None, tz_offset_min: int = 0) -> list[dict]:
+def months(db_path: Path, account: str | None = None, tz_offset_min: int = 0,
+           meta: dict | None = None, archived: str = "all") -> list[dict]:
     con = sqlite3.connect(db_path)
     try:
-        sql = ("SELECT strftime('%Y-%m', sort_time, ?) m, count(*) FROM conv WHERE sort_time != ''"
-               + (" AND account = ?" if account else "") + " GROUP BY m ORDER BY m DESC")
-        args = [f"{int(tz_offset_min):+d} minutes"] + ([account] if account else [])
+        _load_meta_tables(con, meta)
+        where, margs = [], []
+        _meta_where(archived, [], "any", where, margs)
+        sql = ("SELECT strftime('%Y-%m', c.sort_time, ?) m, count(*) FROM conv c WHERE c.sort_time != ''"
+               + (" AND c.account = ?" if account else "") + "".join(" AND " + w for w in where)
+               + " GROUP BY m ORDER BY m DESC")
+        args = [f"{int(tz_offset_min):+d} minutes"] + ([account] if account else []) + margs
         return [{"month": m, "count": c} for m, c in con.execute(sql, args) if m]
     finally:
         con.close()

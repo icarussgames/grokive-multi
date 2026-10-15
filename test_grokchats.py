@@ -151,4 +151,50 @@ def test_server_endpoints(monkeypatch, tmp_path):
     assert c.get("/api/chats?period=y:2026").get_json()["total"] == 3
     assert c.get("/api/chats/months").get_json()["months"][0]["month"] == "2026-09"
     assert c.get("/api/chats/acct1/c2").get_json()["title"] == "Chat c2"
-    assert c.get("/api/chats/acct1/..%2Fx").status_code == 404
+    assert c.get("/api/chats/acct1/bad%24id").status_code == 404
+
+
+def test_meta_tags_archive_filters(monkeypatch, tmp_path):
+    run(monkeypatch, tmp_path, Fake(PAGES))
+    db = gc.ensure_index(tmp_path)
+    meta = gc.load_meta(tmp_path / "nope.json")
+    gc.update_meta(meta, ["acct1/c1", "acct1/c2"], add=["Work", "blender"])
+    gc.update_meta(meta, ["acct1/c2"], remove=["blender"], archived=True)
+    gc.save_meta(tmp_path / "chat_meta.json", meta)
+    meta = gc.load_meta(tmp_path / "chat_meta.json")
+    assert meta["chats"]["acct1/c2"] == {"tags": ["Work"], "archived": True}
+    ids = lambda **kw: sorted(i["id"] for i in gc.search(db, meta=meta, **kw)["items"])
+    assert ids(archived="active") == ["c1", "c3"]
+    assert ids(archived="archived") == ["c2"]
+    assert ids(archived="all", tags=["work"]) == ["c1", "c2"]
+    assert ids(archived="all", tags=["work", "blender"], tag_mode="all") == ["c1"]
+    assert ids(archived="all", q="#work pelicans") == ["c1", "c2"]
+    assert ids(archived="active", q="pelicans #blender") == ["c1"]
+    it = gc.search(db, meta=meta, archived="archived")["items"][0]
+    assert it["tags"] == ["Work"] and it["archived"] is True
+    f = gc.facets(db, meta, "active")
+    assert f["accounts"] == [{"id": "acct1", "count": 2}] and f["archived"] == 1
+    assert {t["name"]: t["count"] for t in f["tags"]} == {"blender": 1, "Work": 1}
+    # sync never touches meta
+    run(monkeypatch, tmp_path, Fake(PAGES), deep=True)
+    assert gc.load_meta(tmp_path / "chat_meta.json") == meta
+    gc.update_meta(meta, ["acct1/c2"], remove=["work"], archived=False)
+    assert "acct1/c2" not in meta["chats"]
+
+
+def test_server_meta_endpoint(monkeypatch, tmp_path):
+    import server
+    run(monkeypatch, tmp_path, Fake(PAGES))
+    monkeypatch.setattr(server, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(server, "CHAT_META_FILE", tmp_path / "chat_meta.json")
+    monkeypatch.setattr(server, "_auth_mode", lambda: "off", raising=False)
+    c = server.app.test_client()
+    r = c.post("/api/chats/meta", json={"chats": [{"account": "acct1", "id": "c1"}], "add": ["x"], "archived": True})
+    if r.status_code in (401, 302):
+        pytest.skip("auth on")
+    assert r.get_json()["ok"]
+    assert c.get("/api/chats").get_json()["total"] == 2
+    assert c.get("/api/chats?archived=all&tags=x").get_json()["items"][0]["id"] == "c1"
+    assert c.get("/api/chats/facets?archived=all").get_json()["tags"] == [{"name": "x", "count": 1}]
+    assert c.get("/api/chats/acct1/c1").get_json()["tags"] == ["x"]
+    assert c.post("/api/chats/meta", json={"chats": [{"account": "../a", "id": "c1"}]}).status_code == 400

@@ -694,8 +694,11 @@ export async function login(username, password) {
 export const logout = () => fetch('/api/logout', { method: 'POST' }).catch(() => {});
 
 // ---- Archived Grok chats (grokchats.py) ----
-export function fetchChats({ q = '', account = 'all', period = 'all', sort = 'new', page = 1, pageSize = 50 } = {}) {
+export function fetchChats({ q = '', account = 'all', period = 'all', sort = 'new', page = 1, pageSize = 50, archived = 'active', tags = [], tagMode = 'any' } = {}) {
   const p = new URLSearchParams();
+  p.set('archived', archived);
+  for (const t of tags) p.append('tags', t);
+  if (tags.length > 1 && tagMode === 'all') p.set('tag_mode', 'all');
   if (q) p.set('q', q);
   if (account && account !== 'all') p.set('account', account);
   if (period && period !== 'all') p.set('period', period);
@@ -705,9 +708,20 @@ export function fetchChats({ q = '', account = 'all', period = 'all', sort = 'ne
   p.set('page_size', String(pageSize));
   return getJSON(`/api/chats?${p.toString()}`);
 }
-export function fetchChatMonths(account = 'all') {
-  const p = new URLSearchParams({ tz_offset: String(-new Date().getTimezoneOffset()) });
+export function fetchChatMonths(account = 'all', archived = 'all') {
+  const p = new URLSearchParams({ tz_offset: String(-new Date().getTimezoneOffset()), archived });
   if (account && account !== 'all') p.set('account', account);
   return getJSON(`/api/chats/months?${p.toString()}`);
 }
 export const fetchChat = (account, id) => getJSON(`/api/chats/${encodeURIComponent(account)}/${encodeURIComponent(id)}`);
+export function fetchChatFacets({ account = 'all', archived = 'active' } = {}) {
+  const p = new URLSearchParams({ archived });
+  if (account && account !== 'all') p.set('account', account);
+  return getJSON(`/api/chats/facets?${p.toString()}`);
+}
+// chats: [{account, id}]; patch: {add?, remove?, archived?}
+export async function updateChatMeta(chats, patch) {
+  const res = await fetch('/api/chats/meta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chats, ...patch }) });
+  if (!res.ok) throw new Error(`${res.status}`);
+  return res.json();
+}

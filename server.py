@@ -5792,9 +5792,48 @@ def api_chats() -> Response:
     res = grokchats.search(db_path, q=request.args.get("q", ""),
                            account=None if account in ("", "all") else account,
                            start=start, end=end, sort=request.args.get("sort", "new"),
-                           limit=size, offset=(page - 1) * size)
+                           limit=size, offset=(page - 1) * size,
+                           meta=grokchats.load_meta(CHAT_META_FILE),
+                           archived=request.args.get("archived", "active"),
+                           tags=request.args.getlist("tags"),
+                           tag_mode="all" if request.args.get("tag_mode") == "all" else "any")
     return jsonify(total=res["total"], items=res["items"], page=page, page_size=size,
                    hl=[grokchats.HL_OPEN, grokchats.HL_CLOSE])
+
+
+CHAT_META_FILE = DATA_DIR / "chat_meta.json"  # chat tags + archived flags (sync never writes it)
+_chat_meta_lock = threading.Lock()
+
+
+@app.get("/api/chats/facets")
+def api_chats_facets() -> Response:
+    import grokchats
+    account = (request.args.get("account") or "").strip()
+    return jsonify(grokchats.facets(_chat_db(), grokchats.load_meta(CHAT_META_FILE),
+                                    request.args.get("archived", "active"),
+                                    None if account in ("", "all") else account))
+
+
+@app.post("/api/chats/meta")
+def api_chats_meta() -> Response:
+    """Bulk edit chat tags / archive: {chats: [{account, id}], add: [..], remove: [..], archived: bool}."""
+    import grokchats
+    body = request.get_json(silent=True) or {}
+    keys = []
+    for c in (body.get("chats") or [])[:5000]:
+        if isinstance(c, dict) and grokchats.SAFE_ID.match(str(c.get("id") or "")) \
+                and re.match(r"^[A-Za-z0-9_-]{1,64}$", str(c.get("account") or "")):
+            keys.append(grokchats.meta_key(str(c["account"]), str(c["id"])))
+    if not keys:
+        return jsonify(ok=False, error="No chats given."), 400
+    as_list = lambda v: [str(x) for x in v][:50] if isinstance(v, list) else []
+    arch = body.get("archived")
+    with _chat_meta_lock:
+        meta = grokchats.load_meta(CHAT_META_FILE)
+        n = grokchats.update_meta(meta, keys, as_list(body.get("add")), as_list(body.get("remove")),
+                                  bool(arch) if isinstance(arch, bool) else None)
+        _atomic_write_json(CHAT_META_FILE, meta)
+    return jsonify(ok=True, updated=n)
 
 
 @app.get("/api/chats/months")
@@ -5802,7 +5841,8 @@ def api_chats_months() -> Response:
     import grokchats
     account = (request.args.get("account") or "").strip()
     return jsonify(months=grokchats.months(_chat_db(), None if account in ("", "all") else account,
-                                           _tz_offset_arg() or 0))
+                                           _tz_offset_arg() or 0, grokchats.load_meta(CHAT_META_FILE),
+                                           request.args.get("archived", "all")))
 
 
 @app.get("/api/chats/<account>/<conv_id>")
@@ -5811,6 +5851,8 @@ def api_chat_get(account: str, conv_id: str) -> Response:
     doc = grokchats.load_conversation(DATA_DIR, account, conv_id)
     if doc is None:
         return jsonify(ok=False, error="Not found"), 404
+    m = grokchats.load_meta(CHAT_META_FILE)["chats"].get(grokchats.meta_key(account, conv_id)) or {}
+    doc["tags"], doc["archived"] = m.get("tags", []), bool(m.get("archived"))
     return jsonify(doc)
 
 
@@ -7645,6 +7687,7 @@ _BACKUP_TARGETS = {
     "deleted_ids.json": DELETED_FILE,
     "settings.json": SETTINGS_FILE,
     "prompt_studio.db": PROMPT_DB_FILE,
+    "chat_meta.json": CHAT_META_FILE,
 }
 # imagine_sessions.json is deliberately NOT backed up: it only indexes un-saved Grok
 # Imagine generations whose blobs live in the ephemeral imagine_staging/ scratch dir
@@ -7668,7 +7711,7 @@ _BACKUP_JSON_NAMES = {
     "collection_groups.json", "tag_words.json", "tags.json",
     "saved_responses.json", "scenes.json", "personas.json",
     "freeform_presets.json", "deleted_ids.json", "settings.json",
-    "grok_accounts.json",
+    "grok_accounts.json", "chat_meta.json",
 }
 
 
