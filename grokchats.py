@@ -609,13 +609,18 @@ def facets(db_path: Path, meta: dict | None = None, archived: str = "active", ac
 def search(db_path: Path, q: str = "", account: str | None = None, start: str | None = None,
            end: str | None = None, sort: str = "new", limit: int = 50, offset: int = 0,
            meta: dict | None = None, archived: str = "all", tags: list[str] | None = None,
-           tag_mode: str = "any") -> dict:
+           tag_mode: str = "any", source_deleted: dict | None = None, srcdel: str = "all") -> dict:
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     where, args = [], []
     q, qtags = split_query(q)
     _load_meta_tables(con, meta)
     _meta_where(archived, [*(tags or []), *qtags], "all" if qtags else tag_mode, where, args)
+    gone = source_deleted or {}
+    con.execute("CREATE TEMP TABLE IF NOT EXISTS sdel(account TEXT, id TEXT)")
+    con.executemany("INSERT INTO sdel VALUES(?,?)", [tuple(k.split("/", 1)) for k in gone if "/" in k])
+    if srcdel in ("hide", "only"):
+        where.append(("NOT " if srcdel == "hide" else "") + "EXISTS(SELECT 1 FROM sdel s WHERE s.account=c.account AND s.id=c.id)")
     if account:
         where.append("c.account = ?"); args.append(account)
     if start:
@@ -651,6 +656,8 @@ def search(db_path: Path, q: str = "", account: str | None = None, start: str | 
             m = ((meta or {}).get("chats") or {}).get(meta_key(r["account"], r["id"])) or {}
             it["tags"] = m.get("tags", [])
             it["archived"] = bool(m.get("archived"))
+            sd = gone.get(meta_key(r["account"], r["id"]))
+            it["source_deleted"] = (sd.get("at") or True) if isinstance(sd, dict) else None
             if by_conv:
                 hs = by_conv.get((r["account"], r["id"]), [])
                 it["hits"] = len(hs)

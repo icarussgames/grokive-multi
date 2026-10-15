@@ -66,6 +66,7 @@
   let autonomous = $state(false);
   let grokCollections = $state(false);
   let chatSync = $state(true);
+  let allowSrcDel = $state(false);
   let showAutonomousInfo = $state(false);
   let llmProvider = $state('local');
   let llmUrl = $state('');
@@ -151,6 +152,7 @@
       autonomous = !!s.autonomous_mode;
       grokCollections = !!s.grok_collections_enabled;
       chatSync = s.chat_sync_enabled !== false;
+      allowSrcDel = !!s.allow_source_delete;
       llmProvider = s.llm_provider || providerFromUrl(s.llm_server_url);
       llmUrl = s.llm_server_url || '';
       llmModel = s.llm_model || '';
@@ -406,7 +408,7 @@
 
   async function save() {
     msg = 'Saving…'; msgClass = '';
-    const body = { burn_subtitles: burn, autonomous_mode: autonomous, grok_collections_enabled: grokCollections, chat_sync_enabled: chatSync };
+    const body = { burn_subtitles: burn, autonomous_mode: autonomous, grok_collections_enabled: grokCollections, chat_sync_enabled: chatSync, allow_source_delete: allowSrcDel };
     if (!envLocked) body.whisper_server_url = whisper.trim();
     body.llm_provider = llmProvider;
     body.embed_provider = embedProvider;
@@ -969,6 +971,13 @@
           {#if showAutonomousInfo}
             <p class="mt-2 text-xs text-muted">After each Sync, automatically update the prompt index, import new prompts into your library, generate subtitles for any videos still missing them (when a subtitle endpoint is configured), and AI-tag the newly imported prompts (when an AI provider is configured). Existing prompts are never re-tagged. Progress shows in the Sync status pill.</p>
           {/if}
+          <label class="mt-3 flex cursor-pointer items-start gap-2 text-sm">
+            <input type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]" bind:checked={allowSrcDel} />
+            <span>
+              <span class="font-semibold text-[var(--danger-ink)]">Allow deleting on grok.com</span>
+              <span class="block text-xs text-muted">Unlocks <b>Delete on grok.com</b> in the library and Chats. Removes the item from the Grok account; your local backup stays and is marked. Off by default. Probe first: <code class="rounded-sm bg-[var(--code-bg)] px-1">python server.py --probe-delete &lt;account&gt; chat|media &lt;id&gt;</code>.</span>
+            </span>
+          </label>
           <label class="mt-3 flex cursor-pointer items-start gap-2 text-sm">
             <input type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]" bind:checked={chatSync} />
             <span>

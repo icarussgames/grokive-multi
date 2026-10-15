@@ -33,6 +33,7 @@ export function fetchMedia(f, page = 1, pageSize = 120, collectionId = null) {
   // Day/month boundaries (and the months facet) follow the browser's local time.
   p.set('tz_offset', String(-new Date().getTimezoneOffset()));
   if (f.uncollected) p.set('uncollected', '1');
+  if (f.srcdel && f.srcdel !== 'all') p.set('srcdel', f.srcdel);
   if (collectionId) p.set('collection', collectionId);
   p.set('sort', f.sort || 'new');
   p.set('page', String(page));
@@ -58,6 +59,7 @@ export function fetchFacets(f = {}, collectionId = null) {
   // Day/month boundaries (and the months facet) follow the browser's local time.
   p.set('tz_offset', String(-new Date().getTimezoneOffset()));
   if (f.uncollected) p.set('uncollected', '1');
+  if (f.srcdel && f.srcdel !== 'all') p.set('srcdel', f.srcdel);
   if (collectionId) p.set('collection', collectionId);
   return getJSON(`/api/facets?${p.toString()}`);
 }
@@ -694,9 +696,10 @@ export async function login(username, password) {
 export const logout = () => fetch('/api/logout', { method: 'POST' }).catch(() => {});
 
 // ---- Archived Grok chats (grokchats.py) ----
-export function fetchChats({ q = '', account = 'all', period = 'all', sort = 'new', page = 1, pageSize = 50, archived = 'active', tags = [], tagMode = 'any' } = {}) {
+export function fetchChats({ q = '', account = 'all', period = 'all', sort = 'new', page = 1, pageSize = 50, archived = 'active', tags = [], tagMode = 'any', srcdel = 'hide' } = {}) {
   const p = new URLSearchParams();
   p.set('archived', archived);
+  if (srcdel && srcdel !== 'all') p.set('srcdel', srcdel);
   for (const t of tags) p.append('tags', t);
   if (tags.length > 1 && tagMode === 'all') p.set('tag_mode', 'all');
   if (q) p.set('q', q);
@@ -725,3 +728,12 @@ export async function updateChatMeta(chats, patch) {
   if (!res.ok) throw new Error(`${res.status}`);
   return res.json();
 }
+export const previewSourceDelete = (kind, items) =>
+  fetch('/api/source-delete/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind, items }) })
+    .then(async (r) => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; });
+export const startSourceDelete = (kind, items, confirm) =>
+  fetch('/api/source-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind, items, confirm }) })
+    .then(async (r) => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; });
+export const sourceDeleteStatus = (id) => getJSON(`/api/source-delete/${encodeURIComponent(id)}`);
+export const cancelSourceDelete = (id) => fetch(`/api/source-delete/${encodeURIComponent(id)}/cancel`, { method: 'POST' }).then((r) => r.json());
+export const fetchSourceDeleted = () => getJSON('/api/source-deleted');

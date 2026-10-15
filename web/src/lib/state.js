@@ -118,6 +118,8 @@ export const filters = writable({
   mediaType: 'all',
   period: 'all', // all | hour1 | hour4 | hour8 | today | yesterday | last7 | last14 | last30 | last60 | month | year | m:YYYY-MM
   uncollected: false, // Archive-view toggle: only items in NO collection or sub-collection
+  // hide | all | only — items deleted on grok.com (local backup kept)
+  srcdel: 'hide',
   sort: 'new'
 });
 
@@ -318,6 +320,9 @@ export function resetAll() {
 }
 export function toggleUncollected() {
   filters.update((f) => ({ ...f, uncollected: !f.uncollected }));
+}
+export function setSrcdel(mode) {
+  filters.update((f) => ({ ...f, srcdel: mode === 'all' || mode === 'only' ? mode : 'hide' }));
 }
 export function hasActiveFilters(f) {
   return !!(f.query || f.tags.length || f.models.length || f.resolutions.length || f.canvas || f.mediaType !== 'all' || f.period !== 'all' || f.uncollected || f.view !== 'recent');

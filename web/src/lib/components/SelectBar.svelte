@@ -3,6 +3,8 @@
   import { exportSelection, exportImagesZip } from '$lib/api.js';
   import { toast } from '$lib/toast.js';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import SourceDeleteModal from './SourceDeleteModal.svelte';
+  import { fetchSourceDeleted } from '$lib/api.js';
   import ParticleField from './ParticleField.svelte';
 
   // A montage render runs server-side, so its progress is global. While it's in
@@ -17,7 +19,10 @@
   let name = $state('');
   let busy = $state(false);
   let confirmingDelete = $state(false);
-  let confirmingRemove = $state(false); // "Remove from Collection" now confirms too — one stray tap shouldn't unfile a selection
+  let confirmingRemove = $state(false);
+  let srcDel = $state(false);
+  let srcDelOn = $state(false);
+  $effect(() => { fetchSourceDeleted().then((d) => (srcDelOn = !!d.enabled)).catch(() => {}); }); // "Remove from Collection" now confirms too — one stray tap shouldn't unfile a selection
 
   // Both dropdowns are position:fixed so they escape the dock's overflow-x clip —
   // which means they have to be placed by hand. `left: 50%` pinned them to the
@@ -223,6 +228,12 @@
     </div>
 
     <div class="select-cluster">
+      {#if srcDelOn}
+        <button class="select-btn select-danger" disabled={!n} onclick={() => (srcDel = true)} title="Delete on grok.com" aria-label="Delete on grok.com" data-testid="srcdel-media-btn">
+          <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6"/><path d="M10 11v6M14 11v6"/><path d="M21 3 3 21"/></svg>
+          <span class="btn-word">On Grok</span>
+        </button>
+      {/if}
       <button class="select-btn select-danger" disabled={!n} onclick={() => (confirmingDelete = true)} title="Delete" aria-label="Delete">
         <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6"/><path d="M10 11v6M14 11v6"/></svg>
       </button>
@@ -248,6 +259,10 @@
     confirmLabel="Remove" danger={false}
     onconfirm={() => { confirmingRemove = false; onremovefromcollection(); }}
     oncancel={() => (confirmingRemove = false)} />
+{/if}
+
+{#if srcDel}
+  <SourceDeleteModal kind="media" items={[...$selection].map((id) => ({ id }))} onclose={() => (srcDel = false)} ondone={() => { srcDel = false; }} />
 {/if}
 
 {#if confirmingDelete}

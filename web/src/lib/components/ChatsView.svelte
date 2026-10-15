@@ -4,12 +4,13 @@
   // snippets, account / date / tag / archive filters, multi-select (Shift+click ranges) for
   // bulk Tag / Archive, and a reader for one conversation.
   import { onMount } from 'svelte';
-  import { fetchChats, fetchChatMonths, fetchChat, fetchChatFacets, updateChatMeta } from '$lib/api.js';
+  import { fetchChats, fetchChatMonths, fetchChat, fetchChatFacets, updateChatMeta, fetchSourceDeleted } from '$lib/api.js';
   import { grokAccounts, accountLabel, loadGrokAccounts, periodLabel, monthLabel } from '$lib/state.js';
   import { copyText } from '$lib/clipboard.js';
   import { toast } from '$lib/toast.js';
   import Collapsible from './Collapsible.svelte';
   import ChatTagModal from './ChatTagModal.svelte';
+  import SourceDeleteModal from './SourceDeleteModal.svelte';
 
   const PAGE = 50;
   const QUICK = [
@@ -22,6 +23,9 @@
   let period = $state('all');
   let sort = $state('new');
   let archived = $state('active'); // active | archived | all
+  let srcdel = $state('hide'); // hide | all | only
+  let srcDelOn = $state(false);
+  let srcDelItems = $state(null);
   let tags = $state([]);
   let tagMode = $state('any');
   let items = $state([]);
@@ -105,7 +109,7 @@
     error = '';
     const nextPage = reset ? 1 : page + 1;
     try {
-      const res = await fetchChats({ q, account, period, sort, archived, tags, tagMode, page: nextPage, pageSize: PAGE });
+      const res = await fetchChats({ q, account, period, sort, archived, tags, tagMode, srcdel, page: nextPage, pageSize: PAGE });
       if (seq !== reqSeq) return;
       if (res.hl) hl = res.hl;
       items = reset ? res.items : [...items, ...res.items];
@@ -129,7 +133,7 @@
     debounce = setTimeout(() => { q = v.trim(); }, 250);
   }
   $effect(() => {
-    void q; void account; void period; void sort; void archived; void tags; void tagMode; void refreshTick;
+    void q; void account; void period; void sort; void archived; void tags; void tagMode; void srcdel; void refreshTick;
     load(true);
   });
   $effect(() => { void account; void archived; void refreshTick; loadFacets(); });
@@ -216,6 +220,7 @@
     if (e.key === 'Escape' && selected.size && !tagFor) selected = new Set();
   }
   onMount(() => {
+    fetchSourceDeleted().then((d) => (srcDelOn = !!d.enabled)).catch(() => {});
     if (!$grokAccounts.length) loadGrokAccounts();
     return () => clearTimeout(debounce);
   });
@@ -235,6 +240,11 @@
       <button type="button" class={chip(archived === 'active')} aria-pressed={archived === 'active'} onclick={() => (archived = 'active')}>Inbox</button>
       <button type="button" class={chip(archived === 'archived')} aria-pressed={archived === 'archived'} onclick={() => (archived = 'archived')}>Archived <span class="opacity-70">{facets.archived}</span></button>
       <button type="button" class={chip(archived === 'all')} aria-pressed={archived === 'all'} onclick={() => (archived = 'all')}>All</button>
+    </div>
+    <div class="mt-2.5 flex flex-wrap gap-1.5" role="group" aria-label="Deleted on grok.com">
+      <button type="button" class={chip(srcdel === 'hide')} onclick={() => (srcdel = 'hide')}>Hide deleted</button>
+      <button type="button" class={chip(srcdel === 'all')} onclick={() => (srcdel = 'all')}>Show deleted</button>
+      <button type="button" class={chip(srcdel === 'only')} onclick={() => (srcdel = 'only')}>Only deleted <span class="opacity-70">{facets.source_deleted || 0}</span></button>
     </div>
   </Collapsible>
   <Collapsible title="Account" count={accountList.length}>
@@ -333,8 +343,11 @@
           <button type="button" class="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold" onclick={() => (open = null)}>← Back to chats</button>
           <a class="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold" href={`https://grok.com/c/${encodeURIComponent(open.id)}`} target="_blank" rel="noopener noreferrer">Open on grok.com ↗</a>
           <button type="button" class="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold" onclick={() => setArchived([open], !open.archived)}>{open.archived ? 'Unarchive' : 'Archive'}</button>
+          {#if srcDelOn && !open.source_deleted}
+            <button type="button" class="rounded-lg border border-[var(--danger)] px-3 py-1.5 text-sm font-semibold text-[var(--danger-ink)]" onclick={() => (srcDelItems = [open])}>Delete on grok.com</button>
+          {/if}
         </div>
-        <h2 class="text-xl font-bold">{open.title || 'Untitled chat'}{#if open.archived}<span class="ml-2 rounded-full border border-line px-2 py-0.5 align-middle text-xs font-semibold text-muted">archived</span>{/if}</h2>
+        <h2 class="text-xl font-bold">{open.title || 'Untitled chat'}{#if open.archived}<span class="ml-2 rounded-full border border-line px-2 py-0.5 align-middle text-xs font-semibold text-muted">archived</span>{/if}{#if open.source_deleted}<span class="ml-2 rounded-full border border-line bg-black/40 px-2 py-0.5 align-middle text-xs font-semibold">gone on grok</span>{/if}</h2>
         <p class="mb-2 text-xs text-muted">
           {accountLabel(open.account, $grokAccounts)} · created {fmtDate(open.create_time, true)}{#if open.modify_time} · updated {fmtDate(open.modify_time, true)}{/if}
           {#if open.messages} · {open.messages.length} messages{/if}
@@ -409,6 +422,9 @@
             {#if selItems.some((c) => c.archived)}
               <button type="button" class="rounded-lg border border-line px-3 py-1 text-sm font-semibold" onclick={() => setArchived(selItems.filter((c) => c.archived), false)}>Unarchive</button>
             {/if}
+            {#if srcDelOn}
+              <button type="button" class="rounded-lg border border-[var(--danger)] px-3 py-1 text-sm font-semibold text-[var(--danger-ink)]" data-testid="srcdel-chat-btn" onclick={() => (srcDelItems = selItems)}>Delete on grok.com</button>
+            {/if}
             <button type="button" class="ml-auto text-xs font-semibold text-muted hover:underline" onclick={() => (selected = new Set())}>Clear (Esc)</button>
           </div>
         {/if}
@@ -430,6 +446,7 @@
                   <div class="flex flex-wrap items-baseline gap-2">
                     <span class="font-semibold">{it.title || 'Untitled chat'}</span>
                     {#if it.archived}<span class="rounded-full border border-line px-1.5 text-[10px] font-semibold text-muted">archived</span>{/if}
+                    {#if it.source_deleted}<span class="rounded-full border border-line bg-black/40 px-1.5 text-[10px] font-semibold" title="Deleted on grok.com">gone on grok</span>{/if}
                     {#each it.tags || [] as t (t)}<span class="rounded-full border border-[var(--chip-line)] bg-[var(--chip-bg)] px-1.5 text-[10px] font-semibold text-[var(--chip-ink)]">{t}</span>{/each}
                     <span class="text-xs text-muted">{fmtDate(it.sort_time)} · {accountLabel(it.account, $grokAccounts)} · {it.n_messages} msg{#if it.hits} · {it.hits} hit{it.hits === 1 ? '' : 's'}{/if}</span>
                   </div>
@@ -457,6 +474,11 @@
 
 {#if tagFor}
   <ChatTagModal chats={tagFor} allTags={facets.tags} onchange={refresh} onclose={() => { tagFor = null; refresh(); }} />
+{/if}
+{#if srcDelItems}
+  <SourceDeleteModal kind="chat" items={srcDelItems.map((c) => ({ account: c.account, id: c.id }))}
+    onclose={() => (srcDelItems = null)}
+    ondone={() => { srcDelItems = null; if (open) openChat(open); refresh(); }} />
 {/if}
 
 <style>

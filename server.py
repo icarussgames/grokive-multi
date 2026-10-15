@@ -40,6 +40,7 @@ import zipfile
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -1414,6 +1415,7 @@ def api_settings_get() -> Response:
         autonomous_mode=bool(settings.get("autonomous_mode")),
         grok_collections_enabled=bool(settings.get("grok_collections_enabled")),
         chat_sync_enabled=settings.get("chat_sync_enabled", True) is not False,
+        allow_source_delete=bool(settings.get("allow_source_delete")),
         subtitle_font=str(settings.get("subtitle_font") or "system"),
         subtitle_size=_sub_size(settings.get("subtitle_size")),
         subtitle_color=_sub_color(settings.get("subtitle_color")),
@@ -1466,6 +1468,8 @@ def api_settings_post() -> Response:
         settings["burn_subtitles"] = bool(payload.get("burn_subtitles"))
     if "autonomous_mode" in payload:
         settings["autonomous_mode"] = bool(payload.get("autonomous_mode"))
+    if "allow_source_delete" in payload:
+        settings["allow_source_delete"] = bool(payload.get("allow_source_delete"))
     if "chat_sync_enabled" in payload:
         settings["chat_sync_enabled"] = bool(payload.get("chat_sync_enabled"))
     if "grok_collections_enabled" in payload:
@@ -5796,7 +5800,9 @@ def api_chats() -> Response:
                            meta=grokchats.load_meta(CHAT_META_FILE),
                            archived=request.args.get("archived", "active"),
                            tags=request.args.getlist("tags"),
-                           tag_mode="all" if request.args.get("tag_mode") == "all" else "any")
+                           tag_mode="all" if request.args.get("tag_mode") == "all" else "any",
+                           source_deleted=_source_deleted()["chat"],
+                           srcdel=request.args.get("srcdel", "hide"))
     return jsonify(total=res["total"], items=res["items"], page=page, page_size=size,
                    hl=[grokchats.HL_OPEN, grokchats.HL_CLOSE])
 
@@ -5809,9 +5815,12 @@ _chat_meta_lock = threading.Lock()
 def api_chats_facets() -> Response:
     import grokchats
     account = (request.args.get("account") or "").strip()
-    return jsonify(grokchats.facets(_chat_db(), grokchats.load_meta(CHAT_META_FILE),
-                                    request.args.get("archived", "active"),
-                                    None if account in ("", "all") else account))
+    out = grokchats.facets(_chat_db(), grokchats.load_meta(CHAT_META_FILE),
+                           request.args.get("archived", "active"),
+                           None if account in ("", "all") else account)
+    gone = _source_deleted()["chat"]
+    out["source_deleted"] = sum(1 for k in gone if account in ("", "all") or k.startswith(account + "/"))
+    return jsonify(out)
 
 
 @app.post("/api/chats/meta")
@@ -5853,6 +5862,8 @@ def api_chat_get(account: str, conv_id: str) -> Response:
         return jsonify(ok=False, error="Not found"), 404
     m = grokchats.load_meta(CHAT_META_FILE)["chats"].get(grokchats.meta_key(account, conv_id)) or {}
     doc["tags"], doc["archived"] = m.get("tags", []), bool(m.get("archived"))
+    gone = _source_deleted()["chat"].get(grokchats.meta_key(account, conv_id))
+    doc["source_deleted"] = (gone or {}).get("at") if gone else None
     return jsonify(doc)
 
 
@@ -5865,6 +5876,197 @@ def _all_collected_ids() -> set[str]:
     for coll in _load_collections():
         out.update(str(i) for i in coll.get("ids", []))
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Delete on grok.com (source account). Off unless Settings allow_source_delete.
+# Local copies stay; source_deleted.json (never written by sync) records what went.
+# {"version": 1, "chat": {"<account>/<id>": {"at": iso, "account": a}},
+#                "media": {"<id>": {"at": iso, "account": a}}}
+# --------------------------------------------------------------------------- #
+
+SOURCE_DELETED_FILE = DATA_DIR / "source_deleted.json"
+_srcdel_lock = threading.Lock()
+_srcdel_jobs: dict[str, dict] = {}
+SRCDEL_TYPE_CONFIRM_OVER = 10  # more than this many items: the user must type DELETE
+
+
+def _source_delete_enabled() -> bool:
+    return bool(_load_settings().get("allow_source_delete"))
+
+
+def _source_deleted() -> dict:
+    try:
+        d = json.loads(SOURCE_DELETED_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        d = {}
+    d = d if isinstance(d, dict) else {}
+    return {"version": 1,
+            "chat": d.get("chat") if isinstance(d.get("chat"), dict) else {},
+            "media": d.get("media") if isinstance(d.get("media"), dict) else {}}
+
+
+def _apply_srcdel_filter(hidden: set, collection_ids: list[str]) -> tuple[set, list[str]]:
+    """?srcdel=hide drops items deleted on grok.com; ?srcdel=only shows just those."""
+    mode = request.args.get("srcdel", "all")
+    if mode not in ("hide", "only"):
+        return hidden, collection_ids
+    gone = set(_source_deleted()["media"])
+    if mode == "hide":
+        return set(hidden) | gone, collection_ids
+    if collection_ids:
+        keep = [i for i in collection_ids if i in gone]
+    else:
+        keep = sorted(gone)
+    return hidden, keep or ["__grokive_no_source_deleted__"]
+
+
+def _account_auth(acct_id: str):
+    path = _account_curl_path(acct_id)
+    if not path.exists() and acct_id == "default" and LEGACY_CURL_FILE.exists():
+        path = LEGACY_CURL_FILE
+    if not path.exists():
+        raise ValueError(f"account '{acct_id}' has no saved cURL session")
+    return gdownloader.choose_grok_auth_spec(gdownloader.parse_curl_samples(path))
+
+
+def _srcdel_resolve(kind: str, raw: list) -> list[dict]:
+    """Normalise request items to [{kind, id, accounts, label}]."""
+    import grokchats
+    out: list[dict] = []
+    if kind == "chat":
+        for c in raw[:2000]:
+            if not isinstance(c, dict):
+                continue
+            acct, cid = str(c.get("account") or ""), str(c.get("id") or "")
+            if grokchats.SAFE_ID.match(cid) and re.match(r"^[A-Za-z0-9_-]{1,64}$", acct):
+                doc = grokchats.load_conversation(DATA_DIR, acct, cid) or {}
+                out.append({"kind": "chat", "id": cid, "accounts": [acct], "label": doc.get("title") or cid})
+        return out
+    ids = [str(x.get("id") if isinstance(x, dict) else x) for x in raw[:2000]]
+    want = {i for i in ids if re.match(r"^[A-Za-z0-9-]{1,128}$", i)}
+    by_id: dict[str, dict] = {}
+    if want:
+        for rec in gdownloader.load_metadata(METADATA_FILE):
+            if str(rec.get("id")) in want:
+                by_id[str(rec["id"])] = rec
+    for i in ids:
+        if i not in want:
+            continue
+        rec = by_id.get(i, {})
+        accts = [a for a in db.item_accounts(rec) if _account_configured(a)]
+        out.append({"kind": "media", "id": i, "accounts": accts, "label": (rec.get("prompt") or i)[:120]})
+    return out
+
+
+def _srcdel_summary(items: list[dict]) -> dict:
+    names = {a["id"]: a["name"] for a in _load_accounts()}
+    by_acct: dict[str, int] = {}
+    unresolved = 0
+    for it in items:
+        if not it["accounts"]:
+            unresolved += 1
+        for a in it["accounts"]:
+            by_acct[a] = by_acct.get(a, 0) + 1
+    return {"count": len(items), "unresolved": unresolved,
+            "accounts": [{"id": a, "name": names.get(a, a), "count": n} for a, n in sorted(by_acct.items())],
+            "type_confirm": len(items) > SRCDEL_TYPE_CONFIRM_OVER}
+
+
+@app.post("/api/source-delete/preview")
+def api_srcdel_preview() -> Response:
+    body = request.get_json(silent=True) or {}
+    kind = body.get("kind")
+    if kind not in ("chat", "media"):
+        return jsonify(ok=False, error="kind must be chat or media"), 400
+    items = _srcdel_resolve(kind, body.get("items") or [])
+    return jsonify(ok=True, enabled=_source_delete_enabled(), **_srcdel_summary(items),
+                   items=[{k: it[k] for k in ("id", "accounts", "label")} for it in items])
+
+
+def _srcdel_worker(job: dict, items: list[dict]) -> None:
+    import grokdelete
+    auths: dict[str, Any] = {}
+
+    def auth_for(acct):
+        if acct not in auths:
+            auths[acct] = _account_auth(acct)
+        return auths[acct]
+
+    def on_result(r: dict) -> None:
+        r = {k: v for k, v in r.items() if k != "attempts"} | {
+            "attempts": [{k: a.get(k) for k in ("account", "status", "error")} for a in r.get("attempts", [])]}
+        if r.get("ok"):
+            stamp = _utc_stamp()
+            with _srcdel_lock:
+                data = _source_deleted()
+                key = f"{r.get('account')}/{r['id']}" if r["kind"] == "chat" else r["id"]
+                data[r["kind"]][key] = {"at": stamp, "account": r.get("account"),
+                                       **({"already": True} if r.get("already") else {})}
+                _atomic_write_json(SOURCE_DELETED_FILE, data)
+        job["results"].append(r)
+        job["done"] += 1
+        job["succeeded" if r.get("ok") else "failed"] += 1
+
+    try:
+        with httpx.Client(follow_redirects=True) as client:
+            grokdelete.run_batch(client, items, auth_for, hard=job["hard"], on_result=on_result,
+                                 should_stop=lambda: job["cancel"])
+    except Exception as exc:  # noqa: BLE001
+        job["error"] = str(exc)[:300]
+    finally:
+        job["running"] = False
+        job["finished_at"] = _utc_stamp()
+
+
+@app.post("/api/source-delete")
+def api_srcdel_start() -> Response:
+    """Start deleting on grok.com: {kind, items, confirm}. ``confirm`` must be "DELETE" when
+    more than SRCDEL_TYPE_CONFIRM_OVER items; otherwise true. Returns a job id to poll."""
+    if not _source_delete_enabled():
+        return jsonify(ok=False, error="Deleting on grok.com is disabled — enable it in Config → Automation."), 403
+    body = request.get_json(silent=True) or {}
+    kind = body.get("kind")
+    if kind not in ("chat", "media"):
+        return jsonify(ok=False, error="kind must be chat or media"), 400
+    items = _srcdel_resolve(kind, body.get("items") or [])
+    if not items:
+        return jsonify(ok=False, error="Nothing to delete."), 400
+    need = "DELETE" if len(items) > SRCDEL_TYPE_CONFIRM_OVER else True
+    if body.get("confirm") != need and not (need is True and body.get("confirm") == "DELETE"):
+        return jsonify(ok=False, error="Confirmation missing."), 400
+    if any(j["running"] for j in _srcdel_jobs.values()):
+        return jsonify(ok=False, error="A grok.com delete is already running."), 409
+    job_id = secrets.token_hex(6)
+    job = {"id": job_id, "kind": kind, "total": len(items), "done": 0, "failed": 0,
+           "results": [], "running": True, "cancel": False, "hard": bool(body.get("hard")) and kind == "chat",
+           "succeeded": 0, "started_at": _utc_stamp(), "finished_at": None, "error": None}
+    _srcdel_jobs[job_id] = job
+    threading.Thread(target=_srcdel_worker, args=(job, items), daemon=True).start()
+    return jsonify(ok=True, job=job_id, total=len(items))
+
+
+@app.get("/api/source-delete/<job_id>")
+def api_srcdel_status(job_id: str) -> Response:
+    job = _srcdel_jobs.get(job_id)
+    if not job:
+        return jsonify(ok=False, error="No such job"), 404
+    return jsonify(ok=True, **{k: v for k, v in job.items() if k != "cancel"})
+
+
+@app.post("/api/source-delete/<job_id>/cancel")
+def api_srcdel_cancel(job_id: str) -> Response:
+    job = _srcdel_jobs.get(job_id)
+    if not job:
+        return jsonify(ok=False, error="No such job"), 404
+    job["cancel"] = True
+    return jsonify(ok=True)
+
+
+@app.get("/api/source-deleted")
+def api_source_deleted() -> Response:
+    d = _source_deleted()
+    return jsonify(enabled=_source_delete_enabled(), chat=d["chat"], media=d["media"])
 
 
 @app.get("/api/media")
@@ -5887,6 +6089,7 @@ def api_media() -> Response:
     hidden = _hidden_media_ids(collection_ids if (collection_id and collection_id in _session_unlocked()) else None)
     if request.args.get("uncollected") in ("1", "true") and not collection_id:
         hidden = hidden | _all_collected_ids()
+    hidden, collection_ids = _apply_srcdel_filter(hidden, collection_ids)
     result = db.query_media(
         DB_FILE,
         view=request.args.get("view", "recent"),
@@ -5909,6 +6112,11 @@ def api_media() -> Response:
         tag_mode=_tag_mode_arg(),
         account=_account_arg(),
     )
+    gone = _source_deleted()["media"]
+    for it in result.get("items") or []:
+        rec = gone.get(str(it.get("id")))
+        if rec:
+            it["source_deleted"] = rec.get("at") or True
     return jsonify(result)
 
 
@@ -5930,6 +6138,7 @@ def api_facets() -> Response:
     facet_hidden = _hidden_media_ids(collection_ids if (collection_id and collection_id in _session_unlocked()) else None)
     if request.args.get("uncollected") in ("1", "true") and not collection_id:
         facet_hidden = facet_hidden | _all_collected_ids()
+    facet_hidden, collection_ids = _apply_srcdel_filter(facet_hidden, collection_ids)
     return jsonify(db.facets(
         DB_FILE,
         view=request.args.get("view", "recent"),
@@ -7688,6 +7897,7 @@ _BACKUP_TARGETS = {
     "settings.json": SETTINGS_FILE,
     "prompt_studio.db": PROMPT_DB_FILE,
     "chat_meta.json": CHAT_META_FILE,
+    "source_deleted.json": SOURCE_DELETED_FILE,
 }
 # imagine_sessions.json is deliberately NOT backed up: it only indexes un-saved Grok
 # Imagine generations whose blobs live in the ephemeral imagine_staging/ scratch dir
@@ -7711,7 +7921,7 @@ _BACKUP_JSON_NAMES = {
     "collection_groups.json", "tag_words.json", "tags.json",
     "saved_responses.json", "scenes.json", "personas.json",
     "freeform_presets.json", "deleted_ids.json", "settings.json",
-    "grok_accounts.json", "chat_meta.json",
+    "grok_accounts.json", "chat_meta.json", "source_deleted.json",
 }
 
 
@@ -8076,7 +8286,40 @@ def _probe_chats(account: str) -> int:
     return subprocess.call(cmd, cwd=str(DATA_DIR), env=dict(os.environ, GROK_DATA_DIR=str(DATA_DIR)))
 
 
+def _probe_delete(argv: list[str]) -> int:
+    """`python server.py --probe-delete <account> <chat|media> <id> [--execute] [--hard]`:
+    print the exact request (cookies redacted); with --execute send it and print the raw response."""
+    import grokdelete
+    try:
+        i = argv.index("--probe-delete")
+        acct, kind, item_id = argv[i + 1], argv[i + 2], argv[i + 3]
+    except (ValueError, IndexError):
+        print("usage: python server.py --probe-delete <account> <chat|media> <id> [--execute] [--hard]")
+        return 2
+    try:
+        spec = grokdelete.build_spec(_account_auth(acct), kind, item_id, hard="--hard" in argv)
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {exc}")
+        return 1
+    print(f"{spec.method} {spec.url}")
+    for k in sorted(spec.headers):
+        print(f"  {k}: {'<redacted>' if k.lower() in ('cookie', 'authorization') else spec.headers[k][:80]}")
+    print(f"  cookies: {', '.join(sorted(spec.cookies)) or '(none)'} (values redacted)")
+    if spec.body:
+        print(f"  body: {spec.body}")
+    if "--execute" not in argv:
+        print("dry run — nothing sent. Add --execute to delete this ONE item on grok.com.")
+        return 0
+    with httpx.Client(follow_redirects=True) as client:
+        r = grokdelete._send(client, spec)
+    print(f"-> HTTP {r.status_code}")
+    print((r.text or "")[:2000])
+    return 0 if r.status_code < 300 or r.status_code == 404 else 1
+
+
 def main() -> None:
+    if "--probe-delete" in sys.argv:
+        raise SystemExit(_probe_delete(sys.argv))
     if "--probe-chats" in sys.argv:
         i = sys.argv.index("--probe-chats")
         acct = sys.argv[i + 1] if i + 1 < len(sys.argv) else "default"

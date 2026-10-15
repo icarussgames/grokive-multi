@@ -478,6 +478,9 @@
             onpointerdown={(e) => { e.stopPropagation(); if (e.shiftKey) e.preventDefault(); }}
             onclick={(e) => { e.stopPropagation(); selectCircle(it, e); }}>{sel ? '✓' : ''}</button>
 
+          {#if it.source_deleted}
+            <span class="absolute bottom-2 left-2 z-[4] rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white" title="Deleted on grok.com — local copy kept">Gone on Grok</span>
+          {/if}
           <!-- top-right hover actions: archive + favorite -->
           {#if !selectMode}
             {@const isStashed = $stashed.has(it.id)}

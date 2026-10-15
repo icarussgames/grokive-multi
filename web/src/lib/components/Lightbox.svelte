@@ -42,6 +42,8 @@
   import { trapFocus } from '$lib/focusTrap.js';
   import { fmtSize, fmtDateTime } from '$lib/format.js';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import SourceDeleteModal from './SourceDeleteModal.svelte';
+  import { fetchSourceDeleted } from '$lib/api.js';
   import VisionPrompt from './VisionPrompt.svelte';
   import SubtitleStyleModal from './SubtitleStyleModal.svelte';
   import TagEditor from './TagEditor.svelte';
@@ -79,6 +81,9 @@
   const item = $derived(liveList[i] || null);
   $effect(() => { onitemchange(item?.id ?? null); });
   let confirmingDelete = $state(false);
+  let srcDel = $state(false);
+  let srcDelOn = $state(false);
+  $effect(() => { fetchSourceDeleted().then((d) => (srcDelOn = !!d.enabled)).catch(() => {}); });
   let autoplayVideos = $state(false);
   // Photo slideshow mode (image-only). The ▶ control drives this when the open item is
   // an image; videos keep using autoplayVideos. The two are mutually exclusive.
@@ -526,6 +531,12 @@
           aria-pressed={playing}
           disabled={isImage ? (!slideshow && !hasMoreImages) : (!autoplayVideos && !hasPlayableVideo)}
           onclick={isImage ? toggleSlideshow : toggleAutoplayVideos}>▶</button>
+        {#if srcDelOn}
+          <button class="glass grid h-10 w-10 place-items-center rounded-lg transition hover:text-[var(--danger-ink)]"
+            title="Delete on grok.com" aria-label="Delete on grok.com" data-testid="srcdel-lb-btn" onclick={() => (srcDel = true)}>
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6"/><path d="M10 11v6M14 11v6"/><path d="M21 3 3 21"/></svg>
+          </button>
+        {/if}
         <button class="glass grid h-10 w-10 place-items-center rounded-lg transition hover:text-[var(--danger-ink)]"
           title="Delete (Del)" aria-label="Delete" onclick={() => (confirmingDelete = true)}>
           <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6"/><path d="M10 11v6M14 11v6"/></svg>
@@ -702,6 +713,9 @@
       <VisionPrompt {item} onclose={() => (showVision = false)} />
     {/if}
 
+    {#if srcDel && item}
+      <SourceDeleteModal kind="media" items={[{ id: item.id }]} onclose={() => (srcDel = false)} ondone={() => { srcDel = false; }} />
+    {/if}
     {#if confirmingDelete}
       <ConfirmDialog title="Delete this item?"
         message="The file is permanently removed from disk and won't be re-downloaded on future syncs."

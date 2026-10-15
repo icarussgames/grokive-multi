@@ -96,6 +96,15 @@ cd grokive-multi
   later) are only picked up by a deep sync — run one now and then. Favorites and Agent
   canvases are still listed in full on every sync.
 
+### Delete on grok.com
+
+Optional, **off by default** (Config → Automation → "Allow deleting on grok.com"). Removes selected chats or Imagine posts from the Grok account using the same per-account cURL sessions Sync uses. Local backups stay; each successful delete is recorded in `data/source_deleted.json` (sync never writes that file) and items show a **gone on grok** badge. Filters: library "On grok.com" (Hide deleted / Show all / Only deleted); Chats has the same under Show.
+
+- **Chats:** soft-delete `DELETE /rest/app-chat/conversations/soft/<id>` (what grok.com's own Delete button sends). Probe with `--hard` to try the older permanent `DELETE /rest/app-chat/conversations/<id>`.
+- **Imagine media:** `POST /rest/app-chat` no — `POST /rest/media/post/delete` with `{"id":"<post id>"}`.
+- Bulk from the selection bar / Chat selection bar; single from the lightbox / chat reader. Confirm modal lists accounts and counts; more than 10 items requires typing **DELETE**. Requests are sequential (~1.2s apart) with 429 backoff; partial failures are listed.
+- **Probe (verify before enabling):** `python server.py --probe-delete <account> <chat|media> <id>` prints the request (cookies redacted). Add `--execute` to delete that one throwaway item and print the raw response.
+
 ### Grok chat backup & search
 
 Besides Imagine media, Sync now also backs up each account's **normal Grok chats** (text conversations), so old chats are easy to find again.

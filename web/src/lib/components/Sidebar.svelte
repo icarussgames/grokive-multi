@@ -1,5 +1,5 @@
 <script>
-  import { filters, toggleTag, toggleModel, toggleResolution, clearFilters, userTags, setTagMode, setPeriod, periodLabel, monthLabel } from '$lib/state.js';
+  import { filters, toggleTag, toggleModel, toggleResolution, clearFilters, userTags, setTagMode, setPeriod, periodLabel, monthLabel, setSrcdel } from '$lib/state.js';
   import Collapsible from './Collapsible.svelte';
 
   let { facets = { tags: [], models: [] }, onbrowse = () => {}, onmanagetags = () => {} } = $props();
@@ -54,6 +54,17 @@
      Playlists moved to the Library page — so the sidebar is now a single-purpose: refine the grid.
      The wrapper (desktop <aside> or mobile drawer) owns width, scrolling and visibility. -->
 <div class="p-4">
+  <Collapsible title="On grok.com">
+    <div class="flex flex-wrap gap-1.5" role="group" aria-label="Deleted on grok.com filter">
+      {#each [{ id: 'hide', label: 'Hide deleted' }, { id: 'all', label: 'Show all' }, { id: 'only', label: 'Only deleted' }] as opt}
+        <button type="button" aria-pressed={$filters.srcdel === opt.id}
+          class="rounded-full border px-2.5 py-1 text-xs font-semibold transition {$filters.srcdel === opt.id ? 'border-transparent bg-[var(--accent)] text-[var(--on-accent)]' : 'border-line hover:border-[var(--accent)]'}"
+          onclick={() => setSrcdel(opt.id)}>{opt.label}</button>
+      {/each}
+    </div>
+    <p class="mt-1.5 text-[10px] text-muted">Items deleted on grok.com stay in your local backup.</p>
+  </Collapsible>
+
   <Collapsible title="Date" count={$filters.period !== 'all' ? '•' : ''}>
     <div class="flex flex-wrap gap-1.5">
       {#each QUICK as qd (qd.id)}
