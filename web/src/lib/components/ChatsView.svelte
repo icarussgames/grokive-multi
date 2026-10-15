@@ -35,7 +35,8 @@
   let error = $state('');
   let hl = ['\u0001', '\u0002'];
   let months = $state([]);
-  let facets = $state({ accounts: [], tags: [], archived: 0 });
+  let facets = $state({ accounts: [], tags: [], archived: 0, source_deleted: 0, show: {} });
+  let allTags = $state([]); // every tag name across accounts (picker / datalist suggestions)
   let openYears = $state({});
   let open = $state(null);
   let openErr = $state('');
@@ -123,7 +124,15 @@
     }
   }
   async function loadFacets() {
-    try { facets = await fetchChatFacets({ account, archived }); } catch {}
+    try {
+      // Panel chips (incl. tag-filter counts) stay scoped to the current Show/account filters.
+      facets = await fetchChatFacets({ account, archived, srcdel });
+      // Picker + reader suggestions are ALWAYS global: every tag name on any chat, ignoring
+      // Inbox/Archived/deleted, account, search, and date — so tags that only live on archived
+      // chats still appear when you're in Inbox.
+      const all = await fetchChatFacets({ account: 'all', archived: 'all', srcdel: 'all' });
+      allTags = all.tags || [];
+    } catch {}
   }
 
   let debounce;
@@ -136,7 +145,7 @@
     void q; void account; void period; void sort; void archived; void tags; void tagMode; void srcdel; void refreshTick;
     load(true);
   });
-  $effect(() => { void account; void archived; void refreshTick; loadFacets(); });
+  $effect(() => { void account; void archived; void srcdel; void refreshTick; loadFacets(); });
   $effect(() => {
     void account; void archived; void refreshTick;
     fetchChatMonths(account, archived).then((r) => (months = r.months || [])).catch(() => (months = []));
@@ -230,29 +239,30 @@
 <svelte:window onkeydown={onKey} />
 
 {#snippet panel(idp)}
+  <Collapsible title="Account" count={accountList.length}>
+    <label class="sr-only" for={`${idp}-acct`}>Account</label>
+    <select id={`${idp}-acct`} class="w-full rounded-lg border border-line bg-transparent px-2 py-1.5 text-sm" bind:value={account} data-testid="chat-account">
+      <option value="all">All accounts ({acctTotal.toLocaleString()})</option>
+      {#each accountList as a (a.id)}<option value={a.id}>{a.label} ({a.count.toLocaleString()})</option>{/each}
+    </select>
+  </Collapsible>
   <div class="mb-4">
     <input type="search" class="w-full rounded-lg border border-line bg-transparent px-3 py-1.5 text-sm"
       placeholder={'Search chats…  "phrase"  #tag'} aria-label="Search chats"
       value={qLive} oninput={(e) => onSearchInput(e.currentTarget.value)} />
   </div>
   <Collapsible title="Show">
-    <div class="flex flex-wrap gap-1.5" role="group" aria-label="Archive filter">
-      <button type="button" class={chip(archived === 'active')} aria-pressed={archived === 'active'} onclick={() => (archived = 'active')}>Inbox</button>
-      <button type="button" class={chip(archived === 'archived')} aria-pressed={archived === 'archived'} onclick={() => (archived = 'archived')}>Archived <span class="opacity-70">{facets.archived}</span></button>
-      <button type="button" class={chip(archived === 'all')} aria-pressed={archived === 'all'} onclick={() => (archived = 'all')}>All</button>
+    {@const sh = facets.show || {}}
+    <div class="flex flex-wrap gap-1.5" role="group" aria-label="Archive filter" data-testid="chat-show-archive">
+      <button type="button" class={chip(archived === 'active')} aria-pressed={archived === 'active'} onclick={() => (archived = 'active')}>Inbox <span class="opacity-70">{(sh.inbox ?? 0).toLocaleString()}</span></button>
+      <button type="button" class={chip(archived === 'archived')} aria-pressed={archived === 'archived'} onclick={() => (archived = 'archived')}>Archived <span class="opacity-70">{(sh.archived ?? facets.archived ?? 0).toLocaleString()}</span></button>
+      <button type="button" class={chip(archived === 'all')} aria-pressed={archived === 'all'} onclick={() => (archived = 'all')}>All <span class="opacity-70">{(sh.all ?? 0).toLocaleString()}</span></button>
     </div>
-    <div class="mt-2.5 flex flex-wrap gap-1.5" role="group" aria-label="Deleted on grok.com">
-      <button type="button" class={chip(srcdel === 'hide')} onclick={() => (srcdel = 'hide')}>Hide deleted</button>
-      <button type="button" class={chip(srcdel === 'all')} onclick={() => (srcdel = 'all')}>Show deleted</button>
-      <button type="button" class={chip(srcdel === 'only')} onclick={() => (srcdel = 'only')}>Only deleted <span class="opacity-70">{facets.source_deleted || 0}</span></button>
+    <div class="mt-2.5 flex flex-wrap gap-1.5" role="group" aria-label="Deleted on grok.com" data-testid="chat-show-srcdel">
+      <button type="button" class={chip(srcdel === 'hide')} onclick={() => (srcdel = 'hide')}>Hide deleted <span class="opacity-70">{(sh.srcdel_hide ?? 0).toLocaleString()}</span></button>
+      <button type="button" class={chip(srcdel === 'all')} onclick={() => (srcdel = 'all')}>Show deleted <span class="opacity-70">{(sh.srcdel_all ?? 0).toLocaleString()}</span></button>
+      <button type="button" class={chip(srcdel === 'only')} onclick={() => (srcdel = 'only')}>Only deleted <span class="opacity-70">{(sh.srcdel_only ?? facets.source_deleted ?? 0).toLocaleString()}</span></button>
     </div>
-  </Collapsible>
-  <Collapsible title="Account" count={accountList.length}>
-    <label class="sr-only" for={`${idp}-acct`}>Account</label>
-    <select id={`${idp}-acct`} class="w-full rounded-lg border border-line bg-transparent px-2 py-1.5 text-sm" bind:value={account}>
-      <option value="all">All accounts ({acctTotal.toLocaleString()})</option>
-      {#each accountList as a (a.id)}<option value={a.id}>{a.label} ({a.count.toLocaleString()})</option>{/each}
-    </select>
   </Collapsible>
   <Collapsible title="Date">
     <div class="flex flex-wrap gap-1.5">
@@ -361,7 +371,7 @@
           <input type="text" class="w-32 rounded-full border border-line bg-transparent px-2.5 py-0.5 text-xs" placeholder="+ add tag" aria-label="Add tag"
             list="chat-tag-names" bind:value={readerTag}
             onkeydown={(e) => { if (e.key === 'Enter' && readerTag.trim()) { readerTagEdit({ add: [readerTag.trim()] }); readerTag = ''; } }} />
-          <datalist id="chat-tag-names">{#each facets.tags as t (t.name)}<option value={t.name}></option>{/each}</datalist>
+          <datalist id="chat-tag-names">{#each allTags as t (t.name)}<option value={t.name}></option>{/each}</datalist>
         </div>
         {#if openErr}<p class="text-sm text-red-500">{openErr}</p>{/if}
         {#if open.messages}
@@ -473,7 +483,7 @@
 </div>
 
 {#if tagFor}
-  <ChatTagModal chats={tagFor} allTags={facets.tags} onchange={refresh} onclose={() => { tagFor = null; refresh(); }} />
+  <ChatTagModal chats={tagFor} allTags={allTags} onchange={refresh} onclose={() => { tagFor = null; refresh(); }} />
 {/if}
 {#if srcDelItems}
   <SourceDeleteModal kind="chat" items={srcDelItems.map((c) => ({ account: c.account, id: c.id }))}

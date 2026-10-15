@@ -579,29 +579,65 @@ def _meta_where(archived: str, tags: list[str], tag_mode: str, where: list, args
             args.extend(tl)
 
 
-def facets(db_path: Path, meta: dict | None = None, archived: str = "active", account: str | None = None) -> dict:
-    """Account counts (ignoring the account filter) and tag counts (within it) for an archive mode."""
+def facets(db_path: Path, meta: dict | None = None, archived: str = "active", account: str | None = None,
+           source_deleted: dict | None = None, srcdel: str = "hide") -> dict:
+    """Account counts (ignoring the account filter), tag counts, and SHOW-chip counts.
+
+    SHOW counts are scoped to ``account`` (like the existing Archived number). Inbox /
+    Archived / All also apply the current ``srcdel`` filter; Hide / Show / Only deleted
+    also apply the current ``archived`` filter — so each chip shows how many chats that
+    choice would list given the other Show row + account.
+    """
     con = sqlite3.connect(db_path)
     try:
         _load_meta_tables(con, meta)
+        gone = source_deleted or {}
+        con.execute("CREATE TEMP TABLE IF NOT EXISTS sdel(account TEXT, id TEXT)")
+        con.executemany("INSERT INTO sdel VALUES(?,?)", [tuple(k.split("/", 1)) for k in gone if "/" in k])
+        sdel_sql = "EXISTS(SELECT 1 FROM sdel s WHERE s.account=c.account AND s.id=c.id)"
+
+        def count(arch: str, sd: str) -> int:
+            where, args = [], []
+            _meta_where(arch, [], "any", where, args)
+            if sd in ("hide", "only"):
+                where.append(("NOT " if sd == "hide" else "") + sdel_sql)
+            if account:
+                where.append("c.account = ?"); args.append(account)
+            w = ("WHERE " + " AND ".join(where)) if where else ""
+            return con.execute(f"SELECT count(*) FROM conv c {w}", args).fetchone()[0]
+
+        # Account facet: current archived + srcdel (matches the list's account dropdown).
         where, args = [], []
         _meta_where(archived, [], "any", where, args)
+        if srcdel in ("hide", "only"):
+            where.append(("NOT " if srcdel == "hide" else "") + sdel_sql)
         w = ("WHERE " + " AND ".join(where)) if where else ""
         accts = [{"id": a, "count": n} for a, n in con.execute(
             f"SELECT c.account, count(*) FROM conv c {w} GROUP BY c.account ORDER BY c.account", args)]
+
+        # Tags within account + current show filters.
+        where2, args2 = list(where), list(args)
         if account:
-            where.append("c.account = ?"); args.append(account)
-        w = ("WHERE " + " AND ".join(where)) if where else ""
+            where2.append("c.account = ?"); args2.append(account)
+        w2 = ("WHERE " + " AND ".join(where2)) if where2 else ""
         names: dict[str, str] = {}
         for v in ((meta or {}).get("chats") or {}).values():
             for t in v.get("tags") or []:
                 names.setdefault(t.lower(), t)
         tags = [{"name": names.get(t, t), "count": n} for t, n in con.execute(
             f"SELECT t.tag, count(DISTINCT c.account || '/' || c.id) FROM conv c JOIN mtag t "
-            f"ON t.account=c.account AND t.id=c.id {w} GROUP BY t.tag ORDER BY t.tag", args)]
-        archived_n = con.execute("SELECT count(*) FROM conv c JOIN marc a ON a.account=c.account AND a.id=c.id"
-                                 + (" WHERE c.account = ?" if account else ""), [account] if account else []).fetchone()[0]
-        return {"accounts": accts, "tags": tags, "archived": archived_n}
+            f"ON t.account=c.account AND t.id=c.id {w2} GROUP BY t.tag ORDER BY t.tag", args2)]
+
+        show = {
+            "inbox": count("active", srcdel),
+            "archived": count("archived", srcdel),
+            "all": count("all", srcdel),
+            "srcdel_hide": count(archived, "hide"),
+            "srcdel_all": count(archived, "all"),
+            "srcdel_only": count(archived, "only"),
+        }
+        return {"accounts": accts, "tags": tags, "archived": show["archived"],
+                "source_deleted": show["srcdel_only"], "show": show}
     finally:
         con.close()
 

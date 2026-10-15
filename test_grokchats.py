@@ -175,6 +175,8 @@ def test_meta_tags_archive_filters(monkeypatch, tmp_path):
     f = gc.facets(db, meta, "active")
     assert f["accounts"] == [{"id": "acct1", "count": 2}] and f["archived"] == 1
     assert {t["name"]: t["count"] for t in f["tags"]} == {"blender": 1, "Work": 1}
+    assert f["show"] == {"inbox": 2, "archived": 1, "all": 3,
+                         "srcdel_hide": 2, "srcdel_all": 2, "srcdel_only": 0}
     # sync never touches meta
     run(monkeypatch, tmp_path, Fake(PAGES), deep=True)
     assert gc.load_meta(tmp_path / "chat_meta.json") == meta
@@ -198,3 +200,32 @@ def test_server_meta_endpoint(monkeypatch, tmp_path):
     assert c.get("/api/chats/facets?archived=all").get_json()["tags"] == [{"name": "x", "count": 1}]
     assert c.get("/api/chats/acct1/c1").get_json()["tags"] == ["x"]
     assert c.post("/api/chats/meta", json={"chats": [{"account": "../a", "id": "c1"}]}).status_code == 400
+
+
+def test_tags_are_cross_account(monkeypatch, tmp_path):
+    """A tag name is one shared vocabulary across accounts; facets/search span them."""
+    # Two accounts, same tag name on both.
+    pages_a = [[("c1", 9, "2026-09-02T00:00:00Z")]]
+    pages_b = [[("c2", 8, "2026-08-02T00:00:00Z")]]
+    monkeypatch.setattr(gc, "_request", Fake(pages_a))
+    gc.sync_account(None, AUTH, tmp_path, "alice", log=lambda *_: None)
+    monkeypatch.setattr(gc, "_request", Fake(pages_b))
+    gc.sync_account(None, AUTH, tmp_path, "bob", log=lambda *_: None)
+    db = gc.ensure_index(tmp_path)
+    meta = gc.load_meta(tmp_path / "nope.json")
+    gc.update_meta(meta, ["alice/c1", "bob/c2"], add=["Shared"])
+    gc.update_meta(meta, ["bob/c2"], add=["BobOnly"])
+    f_all = gc.facets(db, meta, "all", None)
+    assert {t["name"]: t["count"] for t in f_all["tags"]} == {"BobOnly": 1, "Shared": 2}
+    f_alice = gc.facets(db, meta, "all", "alice")
+    assert {t["name"]: t["count"] for t in f_alice["tags"]} == {"Shared": 1}
+    hits = gc.search(db, tags=["shared"], archived="all", meta=meta)["items"]
+    assert sorted((h["account"], h["id"]) for h in hits) == [("alice", "c1"), ("bob", "c2")]
+    # Tags that live only on archived chats must still appear in the global facet list
+    # the picker uses (archived=all), even though the Inbox panel filter shows none.
+    gc.update_meta(meta, ["alice/c1", "bob/c2"], archived=True)
+    inbox = gc.facets(db, meta, "active", None)
+    assert inbox["tags"] == []  # panel: no tagged chats in Inbox
+    assert inbox["show"]["inbox"] == 0 and inbox["show"]["archived"] == 2
+    global_tags = gc.facets(db, meta, "all", None, srcdel="all")
+    assert {t["name"]: t["count"] for t in global_tags["tags"]} == {"BobOnly": 1, "Shared": 2}

@@ -5815,12 +5815,12 @@ _chat_meta_lock = threading.Lock()
 def api_chats_facets() -> Response:
     import grokchats
     account = (request.args.get("account") or "").strip()
-    out = grokchats.facets(_chat_db(), grokchats.load_meta(CHAT_META_FILE),
-                           request.args.get("archived", "active"),
-                           None if account in ("", "all") else account)
-    gone = _source_deleted()["chat"]
-    out["source_deleted"] = sum(1 for k in gone if account in ("", "all") or k.startswith(account + "/"))
-    return jsonify(out)
+    return jsonify(grokchats.facets(
+        _chat_db(), grokchats.load_meta(CHAT_META_FILE),
+        request.args.get("archived", "active"),
+        None if account in ("", "all") else account,
+        _source_deleted()["chat"],
+        request.args.get("srcdel", "hide")))
 
 
 @app.post("/api/chats/meta")

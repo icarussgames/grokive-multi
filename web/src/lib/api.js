@@ -717,8 +717,8 @@ export function fetchChatMonths(account = 'all', archived = 'all') {
   return getJSON(`/api/chats/months?${p.toString()}`);
 }
 export const fetchChat = (account, id) => getJSON(`/api/chats/${encodeURIComponent(account)}/${encodeURIComponent(id)}`);
-export function fetchChatFacets({ account = 'all', archived = 'active' } = {}) {
-  const p = new URLSearchParams({ archived });
+export function fetchChatFacets({ account = 'all', archived = 'active', srcdel = 'hide' } = {}) {
+  const p = new URLSearchParams({ archived, srcdel });
   if (account && account !== 'all') p.set('account', account);
   return getJSON(`/api/chats/facets?${p.toString()}`);
 }
