@@ -737,3 +737,7 @@ export const startSourceDelete = (kind, items, confirm) =>
 export const sourceDeleteStatus = (id) => getJSON(`/api/source-delete/${encodeURIComponent(id)}`);
 export const cancelSourceDelete = (id) => fetch(`/api/source-delete/${encodeURIComponent(id)}/cancel`, { method: 'POST' }).then((r) => r.json());
 export const fetchSourceDeleted = () => getJSON('/api/source-deleted');
+
+export const getExternalApi = () => getJSON('/api/external-api');
+export const generateExternalApiKey = () => _postJSON('/api/external-api/generate');
+export const revokeExternalApiKey = () => _postJSON('/api/external-api/revoke');

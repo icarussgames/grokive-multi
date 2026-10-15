@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { checkAccount, checkAllAccounts, syncAccount, getAccounts, createAccount, updateAccount, deleteAccount, getSettings, postSettings, fetchProviderModels, authStatus, logout, exportBackup, restoreBackup } from '$lib/api.js';
+  import { checkAccount, checkAllAccounts, syncAccount, getAccounts, createAccount, updateAccount, deleteAccount, getSettings, postSettings, fetchProviderModels, authStatus, logout, exportBackup, restoreBackup, generateExternalApiKey, revokeExternalApiKey } from '$lib/api.js';
   import { loadSettings, theme, setTheme, THEMES, mode, jobKick, paletteHotkey, IS_MAC } from '$lib/state.js';
   import { portal } from '$lib/portal.js';
   import { toast } from '$lib/toast.js';
@@ -67,6 +67,11 @@
   let grokCollections = $state(false);
   let chatSync = $state(true);
   let allowSrcDel = $state(false);
+  let extApiRemote = $state(false);
+  let extApiConfigured = $state(false);
+  let extApiPrefix = $state('');
+  let extApiPlain = $state('');
+  let extApiBusy = $state(false);
   let showAutonomousInfo = $state(false);
   let llmProvider = $state('local');
   let llmUrl = $state('');
@@ -153,6 +158,9 @@
       grokCollections = !!s.grok_collections_enabled;
       chatSync = s.chat_sync_enabled !== false;
       allowSrcDel = !!s.allow_source_delete;
+      extApiRemote = !!s.external_api_allow_remote;
+      extApiConfigured = !!s.external_api_key_configured;
+      extApiPrefix = s.external_api_key_prefix || '';
       llmProvider = s.llm_provider || providerFromUrl(s.llm_server_url);
       llmUrl = s.llm_server_url || '';
       llmModel = s.llm_model || '';
@@ -408,7 +416,7 @@
 
   async function save() {
     msg = 'Saving…'; msgClass = '';
-    const body = { burn_subtitles: burn, autonomous_mode: autonomous, grok_collections_enabled: grokCollections, chat_sync_enabled: chatSync, allow_source_delete: allowSrcDel };
+    const body = { burn_subtitles: burn, autonomous_mode: autonomous, grok_collections_enabled: grokCollections, chat_sync_enabled: chatSync, allow_source_delete: allowSrcDel, external_api_allow_remote: extApiRemote };
     if (!envLocked) body.whisper_server_url = whisper.trim();
     body.llm_provider = llmProvider;
     body.embed_provider = embedProvider;
@@ -990,6 +998,54 @@
             <span>
               <span class="font-semibold">Tag Grok collections on Sync</span> <span class="text-xs text-muted">(experimental)</span>
               <span class="block text-xs text-muted">Lists each account's grok.com collections during Sync and tags matching items <code class="rounded-sm bg-[var(--code-bg)] px-1">grok:&lt;name&gt;</code>. Off by default while the Grok request is being confirmed; a check refuses to save if Grok ignores the collection filter.</span>
+            </span>
+          </label>
+        </section>
+
+        <section class="mt-6" data-testid="external-api">
+          <div class="mb-2 text-xs font-bold uppercase tracking-wider text-muted">External API</div>
+          <p class="mb-2 text-sm text-muted">Read-only HTTP API for local tools (<code class="rounded-sm bg-[var(--code-bg)] px-1">/api/v1/tags</code>, <code class="rounded-sm bg-[var(--code-bg)] px-1">/api/v1/tag/&lt;name&gt;</code>). Authenticate with <code class="rounded-sm bg-[var(--code-bg)] px-1">Authorization: Bearer &lt;key&gt;</code> or <code class="rounded-sm bg-[var(--code-bg)] px-1">X-API-Key</code>. Localhost only unless you allow remote.</p>
+          <div class="flex flex-wrap items-center gap-2 text-sm">
+            {#if extApiConfigured}
+              <span class="rounded-full border border-line px-2.5 py-0.5 text-xs font-semibold">Key {extApiPrefix}…</span>
+            {:else}
+              <span class="text-xs text-muted">No key yet</span>
+            {/if}
+            <button type="button" class="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold" disabled={extApiBusy}
+              onclick={async () => {
+                if (extApiConfigured && !confirm('Rotate the API key? The old key stops working immediately.')) return;
+                extApiBusy = true;
+                try {
+                  const r = await generateExternalApiKey();
+                  extApiPlain = r.key; extApiConfigured = true; extApiPrefix = r.prefix || '';
+                  toast('API key generated — copy it now', { type: 'success' });
+                } catch (e) { toast(String(e.message || e), { type: 'error' }); }
+                finally { extApiBusy = false; }
+              }}>{extApiConfigured ? 'Regenerate' : 'Generate key'}</button>
+            {#if extApiConfigured}
+              <button type="button" class="rounded-lg border border-[var(--danger)] px-3 py-1.5 text-xs font-semibold text-[var(--danger-ink)]" disabled={extApiBusy}
+                onclick={async () => {
+                  if (!confirm('Revoke the API key? External tools will stop working until you generate a new one.')) return;
+                  extApiBusy = true;
+                  try { await revokeExternalApiKey(); extApiConfigured = false; extApiPrefix = ''; extApiPlain = ''; toast('API key revoked', { type: 'success' }); }
+                  catch (e) { toast(String(e.message || e), { type: 'error' }); }
+                  finally { extApiBusy = false; }
+                }}>Revoke</button>
+            {/if}
+          </div>
+          {#if extApiPlain}
+            <div class="mt-2 rounded-lg border border-[var(--accent)] p-2" data-testid="ext-api-key-once">
+              <p class="mb-1 text-xs font-semibold text-[var(--danger-ink)]">Copy now — this is the only time the full key is shown.</p>
+              <code class="block break-all rounded bg-[var(--code-bg)] px-2 py-1 text-xs">{extApiPlain}</code>
+              <button type="button" class="mt-1 text-xs font-semibold text-[var(--accent)] hover:underline"
+                onclick={async () => { try { await navigator.clipboard.writeText(extApiPlain); toast('Key copied', { type: 'success' }); } catch { toast('Copy failed', { type: 'error' }); } }}>Copy</button>
+            </div>
+          {/if}
+          <label class="mt-3 flex cursor-pointer items-start gap-2 text-sm">
+            <input type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]" bind:checked={extApiRemote} />
+            <span>
+              <span class="font-semibold">Allow non-localhost access</span>
+              <span class="block text-xs text-muted">Off by default. When off, only requests from 127.0.0.1 / ::1 can use the key.</span>
             </span>
           </label>
         </section>

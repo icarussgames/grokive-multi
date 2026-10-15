@@ -1173,6 +1173,23 @@ def _clear_login_fails(ip: str) -> None:
 # Only the data is protected; the SPA shell + assets stay public so the login
 # screen can load. These API endpoints are always reachable (to log in/out/check).
 _OPEN_API = {"/api/auth/status", "/api/login", "/api/logout"}
+# /api/v1/* is open to the session check; it authenticates via API key inside the handler.
+
+
+def _external_api_allow_remote() -> bool:
+    return bool(_load_settings().get("external_api_allow_remote"))
+
+
+def _v1_authorized() -> tuple[bool, str | None]:
+    """(ok, error). Localhost-only unless Config allows remote; requires a valid API key."""
+    import external_api as ea
+    if not ea.load_key_record(DATA_DIR):
+        return False, "No API key configured — generate one in Config → External API."
+    if not (_external_api_allow_remote() or ea.is_loopback(request.remote_addr)):
+        return False, "External API is localhost-only (enable remote access in Config to override)."
+    if not ea.verify_key(DATA_DIR, ea.extract_key(request.headers)):
+        return False, "Invalid or missing API key."
+    return True, None
 
 
 @app.before_request
@@ -1180,6 +1197,9 @@ def _require_auth():
     if _admin_configured():
         path = request.path
         if path in _OPEN_API:
+            return None
+        # Read-only external API: Bearer / X-API-Key instead of the browser session.
+        if path.startswith("/api/v1/"):
             return None
         if not path.startswith(("/api/", "/media/", "/thumbnails/")):
             return None  # SPA shell, assets, manifest, icons
@@ -1416,6 +1436,9 @@ def api_settings_get() -> Response:
         grok_collections_enabled=bool(settings.get("grok_collections_enabled")),
         chat_sync_enabled=settings.get("chat_sync_enabled", True) is not False,
         allow_source_delete=bool(settings.get("allow_source_delete")),
+        external_api_allow_remote=bool(settings.get("external_api_allow_remote")),
+        external_api_key_configured=bool(__import__("external_api").load_key_record(DATA_DIR)),
+        external_api_key_prefix=(__import__("external_api").load_key_record(DATA_DIR) or {}).get("prefix"),
         subtitle_font=str(settings.get("subtitle_font") or "system"),
         subtitle_size=_sub_size(settings.get("subtitle_size")),
         subtitle_color=_sub_color(settings.get("subtitle_color")),
@@ -1470,6 +1493,8 @@ def api_settings_post() -> Response:
         settings["autonomous_mode"] = bool(payload.get("autonomous_mode"))
     if "allow_source_delete" in payload:
         settings["allow_source_delete"] = bool(payload.get("allow_source_delete"))
+    if "external_api_allow_remote" in payload:
+        settings["external_api_allow_remote"] = bool(payload.get("external_api_allow_remote"))
     if "chat_sync_enabled" in payload:
         settings["chat_sync_enabled"] = bool(payload.get("chat_sync_enabled"))
     if "grok_collections_enabled" in payload:
@@ -7908,6 +7933,7 @@ _BACKUP_SECRET_TARGETS = {
     "grok_auth.txt": CURL_FILE,
     "grok_accounts.json": ACCOUNTS_FILE,
     "admin_password.txt": ADMIN_PW_FILE,
+    "api_key.json": DATA_DIR / "api_key.json",
 }
 # Per-account session files ride along in secrets mode under grok_accounts/<id>.txt.
 # Dynamic names, so they can't live in the static allowlist above — restore instead
@@ -8273,6 +8299,142 @@ def _prune_motion_cache() -> None:
                  f"({res['freed'] / 1048576:.1f} MB), {res['kept']} kept")
     except Exception as exc:  # pragma: no cover - never block startup
         print(f"motion cache prune skipped: {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# External read-only API (/api/v1/...) — API key, localhost by default
+# --------------------------------------------------------------------------- #
+
+def _v1_gate():
+    ok, err = _v1_authorized()
+    if ok:
+        return None
+    return jsonify(ok=False, error=err), 401 if "key" in (err or "").lower() or "Invalid" in (err or "") else 403
+
+
+def _v1_base() -> str:
+    return (request.url_root or "").rstrip("/")
+
+
+def _v1_page() -> tuple[int, int]:
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 50))))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        limit, offset = 50, 0
+    return limit, offset
+
+
+@app.get("/api/v1/tags")
+def api_v1_tags() -> Response:
+    denied = _v1_gate()
+    if denied:
+        return denied
+    import external_api as ea
+    tags = ea.list_tags(DATA_DIR, DB_FILE)
+    return jsonify(ok=True, schema="grokive.v1.tags", tags=tags, total=len(tags))
+
+
+@app.get("/api/v1/tag/<path:tag>")
+def api_v1_tag(tag: str) -> Response:
+    denied = _v1_gate()
+    if denied:
+        return denied
+    import external_api as ea
+    import grokchats
+    tag = grokchats.norm_tag(tag)
+    if not tag or not ea.TAG_SAFE.match(tag):
+        return jsonify(ok=False, error="Bad tag."), 400
+    kind = (request.args.get("kind") or "all").lower()
+    if kind not in ("chats", "media", "all"):
+        return jsonify(ok=False, error="kind must be chats|media|all"), 400
+    include = (request.args.get("include") or "summary").lower()
+    if include not in ("summary", "full"):
+        return jsonify(ok=False, error="include must be summary|full"), 400
+    account = (request.args.get("account") or "").strip() or None
+    archived = request.args.get("archived", "all")
+    if archived not in ("active", "archived", "all"):
+        archived = "all"
+    srcdel = request.args.get("srcdel", "all")
+    if srcdel not in ("hide", "all", "only"):
+        srcdel = "all"
+    limit, offset = _v1_page()
+    gone = _source_deleted()
+    out: dict = {"ok": True, "schema": "grokive.v1.tag", "tag": tag, "kind": kind,
+                 "include": include, "limit": limit, "offset": offset,
+                 "chats": {"total": 0, "items": []}, "media": {"total": 0, "items": []}}
+    if kind in ("chats", "all"):
+        out["chats"] = ea.query_chats_by_tag(
+            DATA_DIR, tag, account=account, archived=archived, include=include,
+            limit=limit, offset=offset, source_deleted=gone["chat"], srcdel=srcdel)
+    if kind in ("media", "all"):
+        out["media"] = ea.query_media_by_tag(
+            DB_FILE, GALLERY_DIR, tag, account=account, limit=limit, offset=offset,
+            base_url=_v1_base(), accounts_file=ACCOUNTS_FILE, source_deleted=gone["media"])
+    return jsonify(out)
+
+
+@app.get("/api/v1/chats/<account>/<conv_id>")
+def api_v1_chat(account: str, conv_id: str) -> Response:
+    denied = _v1_gate()
+    if denied:
+        return denied
+    import grokchats
+    import external_api as ea
+    doc = grokchats.load_conversation(DATA_DIR, account, conv_id)
+    if doc is None:
+        return jsonify(ok=False, error="Not found"), 404
+    labels = ea._account_labels(ACCOUNTS_FILE)
+    m = grokchats.load_meta(CHAT_META_FILE)["chats"].get(grokchats.meta_key(account, conv_id)) or {}
+    gone = _source_deleted()["chat"].get(grokchats.meta_key(account, conv_id))
+    return jsonify(ok=True, schema="grokive.v1.chat",
+                   kind="chat", id=doc["id"], account=account,
+                   account_label=labels.get(account, account),
+                   title=doc.get("title") or "", create_time=doc.get("create_time"),
+                   modify_time=doc.get("modify_time"), url=doc.get("url") or f"https://grok.com/c/{conv_id}",
+                   tags=m.get("tags", []), archived=bool(m.get("archived")),
+                   source_deleted=(gone or {}).get("at") if gone else None,
+                   messages=doc.get("messages") or [])
+
+
+@app.get("/api/v1/media/<media_id>")
+def api_v1_media(media_id: str) -> Response:
+    denied = _v1_gate()
+    if denied:
+        return denied
+    import external_api as ea
+    item = ea.media_detail(DB_FILE, GALLERY_DIR, media_id, base_url=_v1_base(),
+                           accounts_file=ACCOUNTS_FILE, source_deleted=_source_deleted()["media"])
+    if item is None:
+        return jsonify(ok=False, error="Not found"), 404
+    return jsonify(ok=True, schema="grokive.v1.media", **item)
+
+
+@app.get("/api/external-api")
+def api_external_status() -> Response:
+    """Session-auth: whether a key exists (never returns the secret)."""
+    import external_api as ea
+    rec = ea.load_key_record(DATA_DIR)
+    return jsonify(ok=True, configured=bool(rec), prefix=(rec or {}).get("prefix"),
+                   created_at=(rec or {}).get("created_at"),
+                   allow_remote=_external_api_allow_remote())
+
+
+@app.post("/api/external-api/generate")
+def api_external_generate() -> Response:
+    """Session-auth: generate (or rotate) the API key. Plaintext returned ONCE."""
+    import external_api as ea
+    key = ea.generate_key(DATA_DIR)
+    rec = ea.load_key_record(DATA_DIR) or {}
+    return jsonify(ok=True, key=key, prefix=rec.get("prefix"), created_at=rec.get("created_at"),
+                   warning="Copy this key now — it will not be shown again.")
+
+
+@app.post("/api/external-api/revoke")
+def api_external_revoke() -> Response:
+    import external_api as ea
+    ea.revoke_key(DATA_DIR)
+    return jsonify(ok=True)
 
 
 def _probe_chats(account: str) -> int:

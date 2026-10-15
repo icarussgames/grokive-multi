@@ -96,6 +96,47 @@ cd grokive-multi
   later) are only picked up by a deep sync — run one now and then. Favorites and Agent
   canvases are still listed in full on every sync.
 
+### External API (local tools)
+
+Read-only HTTP API for querying Grokive by tag from scripts on the same machine. **Off until you generate a key** in **Config → External API**.
+
+- **Auth:** `Authorization: Bearer <key>` or `X-API-Key: <key>`. The key is stored hashed in `data/api_key.json` (plaintext shown once at generation). Bypasses the browser login **only** for `/api/v1/*`.
+- **Localhost only** by default (`127.0.0.1` / `::1`). Toggle “Allow non-localhost access” in Config if you must reach it from another host on your LAN (keep the key secret).
+- **Endpoints:**
+  - `GET /api/v1/tags` — every chat tag and media tag with counts (`chats`, `media`, `total`), cross-account.
+  - `GET /api/v1/tag/<tag>?kind=chats|media|all&include=summary|full&account=&archived=active|archived|all&srcdel=hide|all|only&limit=&offset=` — chats and/or media with that tag. `include=full` adds full chat messages. Media items include absolute `local_path`, `local_url` (served by this Grokive), and `grok_url`.
+  - `GET /api/v1/chats/<account>/<id>` — one chat with messages.
+  - `GET /api/v1/media/<id>` — one media item.
+
+```bash
+# List tags
+curl -s -H "Authorization: Bearer gk_…" http://127.0.0.1:8080/api/v1/tags | jq .
+
+# Chats tagged Work (full messages)
+curl -s -H "X-API-Key: gk_…" \
+  "http://127.0.0.1:8080/api/v1/tag/Work?kind=chats&include=full" | jq .
+
+# Media tagged Work
+curl -s -H "Authorization: Bearer gk_…" \
+  "http://127.0.0.1:8080/api/v1/tag/Work?kind=media" | jq '.media.items[0].local_path,.media.items[0].local_url'
+```
+
+```python
+import requests
+KEY = "gk_…"
+r = requests.get(
+    "http://127.0.0.1:8080/api/v1/tag/Work",
+    params={"kind": "all", "include": "summary"},
+    headers={"Authorization": f"Bearer {KEY}"},
+    timeout=30,
+)
+r.raise_for_status()
+data = r.json()
+print(data["chats"]["total"], "chats;", data["media"]["total"], "media")
+for m in data["media"]["items"]:
+    print(m["id"], m["local_path"])
+```
+
 ### Delete on grok.com
 
 Optional, **off by default** (Config → Automation → "Allow deleting on grok.com"). Removes selected chats or Imagine posts from the Grok account using the same per-account cURL sessions Sync uses. Local backups stay; each successful delete is recorded in `data/source_deleted.json` (sync never writes that file) and items show a **gone on grok** badge. Filters: library "On grok.com" (Hide deleted / Show all / Only deleted); Chats has the same under Show.
