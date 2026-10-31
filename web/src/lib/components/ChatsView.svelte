@@ -225,6 +225,54 @@
     const ok = await copyText(text);
     toast(ok ? `${what} copied` : "Couldn't copy", { type: ok ? 'success' : 'error' });
   }
+  function saveChatMd() {
+    if (!open) return;
+    const title = (open.title || 'Untitled chat').trim() || 'Untitled chat';
+    const acct = accountLabel(open.account, $grokAccounts);
+    const lines = [];
+    lines.push(`# ${title}`);
+    lines.push('');
+    lines.push(`- **Account:** ${acct}`);
+    lines.push(`- **Conversation id:** \`${open.id}\``);
+    lines.push(`- **Grok:** https://grok.com/c/${encodeURIComponent(open.id)}`);
+    if (open.create_time) lines.push(`- **Created:** ${fmtDate(open.create_time, true)}`);
+    if (open.modify_time) lines.push(`- **Updated:** ${fmtDate(open.modify_time, true)}`);
+    if (open.tags?.length) lines.push(`- **Tags:** ${open.tags.join(', ')}`);
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    for (const m of open.messages || []) {
+      const who = m.sender === 'user' ? 'You' : m.sender === 'assistant' ? 'Grok' : (m.sender || 'Unknown');
+      const meta = [who];
+      if (m.time) meta.push(fmtDate(m.time, true));
+      if (m.model) meta.push(m.model);
+      lines.push(`### ${meta.join(' · ')}`);
+      lines.push('');
+      lines.push(m.text || '');
+      if (m.attachments?.length) {
+        lines.push('');
+        for (const a of m.attachments) {
+          const label = a.name || (a.kind === 'generated' ? 'generated image' : 'attachment');
+          lines.push(a.url ? `- [${label}](${a.url})` : `- ${label}`);
+        }
+      }
+      lines.push('');
+    }
+    const body = lines.join('\n').replace(/\n+$/, '\n');
+    const safe = title.replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'chat';
+    const fname = `${safe} (${String(open.id).slice(0, 8)}).md`;
+    const blob = new Blob([body], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast('Markdown saved', { type: 'success' });
+  }
   function onKey(e) {
     if (e.key === 'Escape' && selected.size && !tagFor) selected = new Set();
   }
@@ -352,6 +400,7 @@
         <div class="mb-4 flex flex-wrap items-center gap-2">
           <button type="button" class="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold" onclick={() => (open = null)}>← Back to chats</button>
           <a class="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold" href={`https://grok.com/c/${encodeURIComponent(open.id)}`} target="_blank" rel="noopener noreferrer">Open on grok.com ↗</a>
+          <button type="button" class="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold" title="Download this chat as Markdown" data-testid="chat-save-md" onclick={saveChatMd} disabled={!open.messages}>Save .md</button>
           <button type="button" class="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold" onclick={() => setArchived([open], !open.archived)}>{open.archived ? 'Unarchive' : 'Archive'}</button>
           {#if srcDelOn && !open.source_deleted}
             <button type="button" class="rounded-lg border border-[var(--danger)] px-3 py-1.5 text-sm font-semibold text-[var(--danger-ink)]" onclick={() => (srcDelItems = [open])}>Delete on grok.com</button>
